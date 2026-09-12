@@ -24,8 +24,8 @@ func NewRecordHandler(svc *service.RecordService) *RecordHandler {
 //
 // 角色取自 JWT（路由层已验证），但**归属校验仍在 service 层做**：
 // 令牌只说明"你是医生"，不说明"这份病历归你"。
-func accessOf(c *gin.Context) service.RecordAccess {
-	return service.RecordAccess{
+func accessOf(c *gin.Context) service.Access {
+	return service.Access{
 		UserID: authctx.MustUserID(c),
 		Role:   model.Role(authctx.Role(c)),
 	}

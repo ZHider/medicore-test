@@ -81,11 +81,20 @@ func (s *PreconsultService) Submit(
 	}, nil
 }
 
-// Report 返回某预约的结构化总结报告。
+// Report 按访问者身份返回某预约的结构化总结报告。
+//
+// spec §2.1 要求医生能"查看患者预问诊报告"，因此本方法不再只面向患者。
+// 但它**不能**简单地放开给所有登录用户——必须做资源层归属校验：
+//
+//	患者：只能看自己的预约
+//	医生：只能看**本人接诊**的预约（不是任意患者的）
+//	管理员：全部读权限
+//
+// 少了医生那一层，任何医生改一下 URL 里的 ID 就能读到全院患者的病情描述。
 func (s *PreconsultService) Report(
-	ctx context.Context, userID, appointmentID uint64,
+	ctx context.Context, access Access, appointmentID uint64,
 ) (*model.AIReportView, error) {
-	if err := s.ensureChattable(ctx, userID, appointmentID); err != nil {
+	if err := s.authorizeReport(ctx, access, appointmentID); err != nil {
 		return nil, err
 	}
 
@@ -97,6 +106,50 @@ func (s *PreconsultService) Report(
 		return nil, apperr.Wrap(errcode.ErrInternal, "查询报告失败", err)
 	}
 	return buildReportView(report), nil
+}
+
+// authorizeReport 实现报告的资源层归属校验。
+func (s *PreconsultService) authorizeReport(
+	ctx context.Context, access Access, appointmentID uint64,
+) error {
+	// 管理员：全部读权限（spec §2.1）
+	if access.IsAdmin() {
+		return nil
+	}
+
+	appt, err := s.appointments.FindByID(ctx, appointmentID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return apperr.New(errcode.ErrNotFound, "预约不存在")
+	}
+	if err != nil {
+		return apperr.Wrap(errcode.ErrInternal, "查询预约失败", err)
+	}
+
+	switch {
+	case access.IsPatient():
+		if appt.UserID != access.UserID {
+			// 与"预约不存在"返回不同文案是有意的：患者只可能访问自己的 ID，
+			// 出现不匹配说明是构造的请求，明确拒绝比含糊更合适。
+			return apperr.New(errcode.ErrNotOwner, "无权查看他人预问诊报告")
+		}
+		return nil
+
+	case access.IsDoctor():
+		doctorID, dErr := s.doctors.FindIDByUserID(ctx, access.UserID)
+		if errors.Is(dErr, repository.ErrNotFound) {
+			return apperr.New(errcode.ErrForbidden, "当前账号没有医生档案")
+		}
+		if dErr != nil {
+			return apperr.Wrap(errcode.ErrInternal, "查询医生档案失败", dErr)
+		}
+		if appt.DoctorID != doctorID {
+			return apperr.New(errcode.ErrNotOwner, "无权查看非本人接诊患者的预问诊报告")
+		}
+		return nil
+
+	default:
+		return apperr.New(errcode.ErrForbidden, "当前角色无权查看预问诊报告")
+	}
 }
 
 // SummarizeReport 处理一个总结任务，由 worker 调用。

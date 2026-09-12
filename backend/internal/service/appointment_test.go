@@ -34,6 +34,9 @@ type fakeAppointmentStore struct {
 	checkInErr   error
 	queueRows    []model.QueueItem
 	queueErr     error
+	// 供预问诊归属校验
+	appointmentByID *model.Appointment
+	findByIDErr     error
 }
 
 func (f *fakeAppointmentStore) Create(_ context.Context, in repository.CreateAppointmentInput) (*model.Appointment, error) {
@@ -51,6 +54,17 @@ func (f *fakeAppointmentStore) Create(_ context.Context, in repository.CreateApp
 		}
 	}
 	return f.created, nil
+}
+
+// FindByID 供预问诊做资源层归属校验。
+func (f *fakeAppointmentStore) FindByID(_ context.Context, id uint64) (*model.Appointment, error) {
+	if f.findByIDErr != nil {
+		return nil, f.findByIDErr
+	}
+	if f.appointmentByID == nil {
+		return &model.Appointment{ID: id, DoctorID: 7}, nil
+	}
+	return f.appointmentByID, nil
 }
 
 func (f *fakeAppointmentStore) FindByUserAndIdempotencyKey(context.Context, uint64, string) (*model.Appointment, error) {

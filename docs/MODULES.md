@@ -5,7 +5,10 @@
 >
 > 即使模块已完成，这些信息仍然重要——**它们回答"为什么是这样写的"，而这正是重构时最容易改错的地方。**
 
-最后更新：`2ecec12`（M6 完成 + 文档固化）
+最后更新：M6 医生工作台补全之后（M1–M6 全部完成；提交历史见 `HANDOVER.md` §1）
+
+> ⚠️ **端点清单以 `backend/internal/router/router.go` 或 gin 启动输出为准。**
+> 本文档曾把管理端点写成 `/api/v1/audit-logs`（少了 `/admin/` 段），照文档调接口会 404。
 
 ---
 
@@ -19,6 +22,8 @@
 | 改任何 HTTP 接口 | §1 M1（中间件链） |
 | 加列表接口 | §3 M3（游标分页） |
 | 排查"数据不一致" | §4 M4（对账）+ §5 M5 |
+| 改医生接诊列表 / 报告归属校验 | §6.7 M6 |
+| **验收某个角色能不能用** | **§6.7 的教训：按角色横切，别按模块打勾** |
 
 **通用前提**：所有模块都遵守 `AGENTS.md` §2 的硬性规则。本文档只记录**模块特有**的内容。
 
@@ -436,6 +441,12 @@ spec 表里有 `version` 字段，但 §7.1 的 SQL 是 `WHERE id=? AND remainin
 - **验证并发**：必须用 `cmd/loadtest`，不要用 `hey`（见坑 3）。
 - **有专门的测试守护关键不变量**：`TestGrab_DatabaseFailureReleasesRedisStock`
   断言"Redis 已扣减但 MySQL 回滚"时必须回补。改坏它会让测试失败。
+- **医生接诊列表 `/doctor/appointments` 也挂在本模块**（M6 补全，见 §6.7）。
+  它复用 `AppointmentService`，但走的是**另一组依赖接口**（`doctorAppointmentStore` + `doctorLookup`）——
+  患者侧的 `appointmentStore` 完全用不到它们。加方法时想清楚加在哪一边，
+  混进 `appointmentStore` 会逼着患者侧的所有测试 fake 去实现用不到的方法。
+- **筛选条件必须白名单校验**（`validateAppointmentFilter`）。参数化 SQL 不会报语法错，
+  拼错的状态值只会**静默返回空列表**，看起来就像"今天真的没有预约"。
 
 ---
 
@@ -647,12 +658,21 @@ internal/repository/record.go    病历事务写入
 internal/service/record.go       ★ 归属校验（authorize）
 internal/handler/record.go
 
+internal/service/access.go       ★ 共用访问者身份 Access{UserID, Role}
+
 internal/mockhis/                模拟 HIS 数据源 + dataset.json
 internal/model/synclog.go
 internal/repository/sync.go      三阶段 upsert
 internal/repository/synclog.go
 internal/service/sync.go         ★ 三阶段编排 + errgroup 限并发
 internal/handler/sync.go
+
+# M6 补全（医生工作台，见 §6.7）——复用 M4 的 appointment 文件，无新增文件
+internal/model/appointment.go        + DoctorAppointmentItem / DoctorAppointmentFilter
+internal/repository/appointment.go   + ListByDoctorCursor / ListAllCursor
+internal/repository/doctor.go        + FindIDByUserID（从 MedicalRecordRepo 迁来）
+internal/service/appointment.go      + ListForDoctor / doctorIDOf / validateAppointmentFilter
+internal/service/preconsult_submit.go + authorizeReport
 ```
 
 ### 6.2 审计：异步批量写入（一个必须明说的取舍）
@@ -692,6 +712,24 @@ func (s *RecordService) authorize(...) error {
 **这是路由层 RBAC 之外的必需一层**：`RequireRole(doctor)` 只保证"是医生"，
 不保证"是**这位患者的**接诊医生"。spec §2.2 明确要求双层校验。
 
+**同一套机制现在被三个 service 共用**，访问者身份统一为 `service.Access`：
+
+| service | 校验函数 | 对应资源 |
+|---|---|---|
+| `RecordService` | `authorize` | 病历 |
+| `PreconsultService` | `authorizeReport` | 预问诊报告 |
+| `AppointmentService` | 无需（`ListForDoctor` 用 `doctorIDOf` 分流） | 预约列表 |
+
+`Access` 之所以放在 `service` 包顶层（`access.go`）而不是某个模块文件里：
+最初它叫 `RecordAccess` 并定义在 `record.go`，
+但预问诊和预约列表也需要同一身份，放在任一模块下都会让别的模块产生
+"要 import 病历模块"的错觉依赖。
+
+**"由 `users.id` 解析 `doctors.id`" 的转换同样被收敛**：
+从 `MedicalRecordRepo.FindDoctorIDByUserID` 迁到 `DoctorRepo.FindIDByUserID`。
+它是医生档案的基本查询，三个模块都要用，挂在 `MedicalRecordRepo` 下是错的依赖方向
+（会让人以为"查医生档案得先有病历仓储"）。
+
 ### 6.4 HIS 同步：三阶段而非一把梭
 
 ```
@@ -723,9 +761,14 @@ func (s *RecordService) authorize(...) error {
 | POST | `/api/v1/appointments/:id/record` | doctor |
 | GET | `/api/v1/appointments/:id/record` | 任意登录角色（service 内再校验归属） |
 | GET | `/api/v1/records` | 任意登录角色（游标分页） |
-| GET | `/api/v1/audit-logs` | admin |
-| POST | `/api/v1/sync/:source` | admin |
-| GET | `/api/v1/sync-logs` | admin |
+| GET | `/api/v1/doctor/appointments` | doctor / admin（**M6 补全**，见 §6.7） |
+| GET | `/api/v1/appointments/:id/preconsult/report` | patient / doctor / admin（**M6 补全**，归属校验见 §6.3） |
+| GET | `/api/v1/admin/audit-logs` | admin（游标分页） |
+| POST | `/api/v1/admin/sync/:source` | admin |
+| GET | `/api/v1/admin/sync-logs` | admin（游标分页） |
+
+> ⚠️ 后三条的前缀是 **`/api/v1/admin/`**。早期版本的本文档与 `ARCHITECTURE.md`
+> 都漏写了 `/admin/` 段，照那份清单调接口会得到 404 —— 代码一直是对的，错的是文档。
 
 ### 6.6 改动时注意
 
@@ -738,6 +781,54 @@ func (s *RecordService) authorize(...) error {
   把一个依赖医生的实体放进阶段 1 会导致大量失败。
 - **同步的 `remaining`**：**绝不能被同步覆盖**。这是 `TestSync_DoesNotResetRemaining`
   守护的不变量 —— 覆盖它意味着患者已抢到的号被"复活"，直接导致超卖。
+
+### 6.7 医生工作台补全（M6 之后的一轮）
+
+**背景**：M1–M6 全部标记"完成"之后，把 spec §2.1 的角色能力矩阵横过来复查了一遍，
+发现医生侧有**两处真实缺口** —— 不是文档漏写，而是接口根本不存在：
+
+| spec §2.1 要求 | 补全前 | 补全后 |
+|---|---|---|
+| 医生查看**本人**预约列表 | ❌ 只有患者视角的 `/appointments` | ✅ `GET /doctor/appointments` |
+| 医生查看患者**预问诊报告** | ❌ 报告接口只对 patient 开放 | ✅ 开放给 patient / doctor / admin |
+
+**这不是锦上添花，是规格缺口**：spec §8 的医生工作台没有这两个接口就搭不起来。
+
+> **教训：模块维度全部打勾 ≠ 角色维度没有缺口。**
+> 此前验收是逐模块自测的，所以 M4 自测通过、M5 自测通过，但"医生坐下来用一遍"这条路径
+> 从来没有被完整走过。**收尾时应按角色走完整工作流，而不是按模块走。**
+
+**四个设计决定**：
+
+| 决定 | 理由 |
+|---|---|
+| 医生列表用**独立端点**而非复用 `/appointments` | 两者响应形态不同（患者关心"我约了哪位医生"，医生关心"这位患者是谁、病历写了没有"），合并会让两边都返回一半无用字段 |
+| `DoctorAppointmentItem` 用**独立结构**而非复用 `AppointmentItem` | 同上；硬塞在一起会让 `omitempty` 与字段语义互相污染 |
+| 依赖接口**独立声明**（`doctorAppointmentStore`） | 患者侧完全用不到这两个方法；混进 `appointmentStore` 会逼患者侧所有测试 fake 去实现它们 |
+| `has_record` 用 **LEFT JOIN + `IS NOT NULL`** | INNER JOIN 会让"还没写病历"的预约整条消失 —— 恰好过滤掉医生最需要看的那些 |
+
+**一个容易写错的细节**：`has_record` 的判定必须是 `mr.id IS NOT NULL`，
+**不能**写成 `mr.id = 0`。LEFT JOIN 未匹配时 `mr.id` 是 `NULL`，
+而 `NULL = 0` 求值为 `NULL`（既不真也不假），扫进 `bool` 会得到 `false` ——
+**碰巧结果正确，但语义是错的**：一旦换成别的判定列或改成内连接就会出错。
+
+**报告的归属校验**（`PreconsultService.authorizeReport`）分三个分支：
+
+```
+admin   → 直接放行（spec §2.1 全部读权限）
+patient → appt.user_id   必须等于自己
+doctor  → appt.doctor_id 必须等于本人 doctors.id（不是 users.id！）
+```
+
+缺了 doctor 分支，任何医生改一下 URL 里的 ID 就能读到全院患者的病情描述 ——
+这是本轮补全里**唯一有真实隐私后果**的一处。
+
+**新增测试**（都做过"改坏实现它会红吗"的自检）：
+
+- **单元 +18**：`appointment_doctor_test.go`（角色分流、筛选白名单、无医生档案）、
+  `preconsult_access_test.go`（管理员直通、患者本人/他人、接诊/非接诊医生、无档案）
+- **集成 +11**：`test/integration/doctor_test.go` —— 含**非接诊医生拿到 40302**，
+  且其接诊列表中看不到该患者的预约（两个端点交叉验证，避免只修一个漏一个）
 
 ---
 
@@ -754,7 +845,7 @@ M4 抢号（stock / idempotency / appointment / scheduler）
       ↓ 提供 appointment 与号源
 M5 AI（llm / prompts / conversation / report / summary_queue / worker）
       ↓ 依赖 appointment 校验归属
-M6 医疗与同步（record / sync / audit）
+M6 医疗与同步（record / sync / audit）+ 医生工作台补全（见 §6.7）
 ```
 
 **几个跨模块的耦合点**（改动时要一起看）：
@@ -763,6 +854,9 @@ M6 医疗与同步（record / sync / audit）
 |---|---|---|
 | `repository.Cache` | M3 ↔ M5 | M5 的 `reconcile.go` 用 M4 的 `stockStore.CompareAndSet` |
 | `appointmentStore` 接口 | M4 ↔ M5 | M5 用 `FindItemByID` 校验归属（SQL 层带 `user_id`，不泄露他人预约是否存在） |
+| `doctorAppointmentStore` 接口 | M4 ↔ M6 | 医生/管理员视角的接诊列表读取能力，**与患者侧 `appointmentStore` 分开声明** |
+| `doctorLookup` 接口 | M4 ↔ M5 ↔ M6 | 三个模块都要"由 `users.id` 解析 `doctors.id`"；实现在 `DoctorRepo.FindIDByUserID` |
+| `service.Access` | M4 ↔ M5 ↔ M6 | 三个 service 共用的访问者身份；**改它的字段要同时改三处调用方** |
 | `audit.Recorder` | M1 ↔ M6 | 中间件依赖最小接口，便于测试替换 |
 | `app.Build()` | 全部 | **改任何模块的构造签名都要改这里**，集成测试复用同一套装配 |
 | `metrics.Register` | 全部 | 各模块在 `init()` 注册自己的指标 |
@@ -778,4 +872,4 @@ M6 医疗与同步（record / sync / audit）
 | **M3** | 禁止 OFFSET（284 倍差距）；手写 JOIN 必须带软删除条件；缓存回源要脱离调用方取消 |
 | **M4** | 预热用 `SETNX`；键不存在返回 -1 不是 0；幂等键比对删除；对账用 CompareAndSet |
 | **M5** | 流式用回调不用 channel；降级是正常路径不是异常；`{}` 是合法 Schema 所以要自检 |
-| **M6** | 审计异步但有丢失窗口；HIS 同步分三阶段；排班 `remaining` 不被重置 |
+| **M6** | 审计异步但有丢失窗口；HIS 同步分三阶段；排班 `remaining` 不被重置；**模块打勾 ≠ 角色无缺口，收尾要按角色横切复查** |

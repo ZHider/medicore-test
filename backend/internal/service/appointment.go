@@ -40,24 +40,29 @@ func init() {
 
 // AppointmentDeps 是 AppointmentService 的依赖集合。
 type AppointmentDeps struct {
-	Appointments  appointmentStore
-	Janitor       appointmentJanitor
-	Schedules     scheduleStore
-	Stock         stockStore
-	Idempotency   idempotencyStore
-	Log           *zap.Logger
-	ConfirmWindow time.Duration
+	Appointments appointmentStore
+	// DoctorAppointments 供医生/管理员视角的列表使用；与患者侧分开声明。
+	DoctorAppointments doctorAppointmentStore
+	Doctors            doctorLookup
+	Janitor            appointmentJanitor
+	Schedules          scheduleStore
+	Stock              stockStore
+	Idempotency        idempotencyStore
+	Log                *zap.Logger
+	ConfirmWindow      time.Duration
 }
 
 // AppointmentService 承载抢号、取消、签到与超时释放。
 type AppointmentService struct {
-	appointments  appointmentStore
-	janitor       appointmentJanitor
-	schedules     scheduleStore
-	stock         stockStore
-	idempotency   idempotencyStore
-	log           *zap.Logger
-	confirmWindow time.Duration
+	appointments       appointmentStore
+	doctorAppointments doctorAppointmentStore
+	doctors            doctorLookup
+	janitor            appointmentJanitor
+	schedules          scheduleStore
+	stock              stockStore
+	idempotency        idempotencyStore
+	log                *zap.Logger
+	confirmWindow      time.Duration
 }
 
 // NewAppointmentService 构造 AppointmentService。
@@ -72,13 +77,15 @@ func NewAppointmentService(d AppointmentDeps) *AppointmentService {
 	}
 
 	return &AppointmentService{
-		appointments:  d.Appointments,
-		janitor:       d.Janitor,
-		schedules:     d.Schedules,
-		stock:         d.Stock,
-		idempotency:   d.Idempotency,
-		log:           log,
-		confirmWindow: window,
+		appointments:       d.Appointments,
+		doctorAppointments: d.DoctorAppointments,
+		doctors:            d.Doctors,
+		janitor:            d.Janitor,
+		schedules:          d.Schedules,
+		stock:              d.Stock,
+		idempotency:        d.Idempotency,
+		log:                log,
+		confirmWindow:      window,
 	}
 }
 
@@ -390,4 +397,83 @@ func (s *AppointmentService) ReleaseExpired(ctx context.Context) (int, error) {
 			zap.Uint64("schedule_id", result.Appointment.ScheduleID))
 	}
 	return released, nil
+}
+
+// ListForDoctor 按访问者身份返回预约列表（spec §2.1：医生查看本人预约列表）。
+//
+// 医生的"预约列表"指**本人接诊的**预约——不是全部预约，也不是患者视角的"我的预约"。
+// 两者响应形态不同（医生要看患者姓名与病历状态），因此是独立端点而非复用 ListMine。
+//
+// 管理员按 spec §2.1 的"全部读权限"可查看全部。
+func (s *AppointmentService) ListForDoctor(
+	ctx context.Context,
+	access Access,
+	filter model.DoctorAppointmentFilter,
+	cursorRaw string,
+	size int,
+) (model.CursorPage[model.DoctorAppointmentItem], error) {
+	var empty model.CursorPage[model.DoctorAppointmentItem]
+
+	if !access.IsDoctor() && !access.IsAdmin() {
+		return empty, apperr.New(errcode.ErrForbidden, "仅医生与管理员可查看接诊列表")
+	}
+	if err := validateAppointmentFilter(filter); err != nil {
+		return empty, err
+	}
+
+	cursor, err := parseCursor(cursorRaw)
+	if err != nil {
+		return empty, err
+	}
+	limit := model.NormalizePageSize(size)
+
+	var rows []model.DoctorAppointmentItem
+	if access.IsAdmin() {
+		rows, err = s.doctorAppointments.ListAllCursor(ctx, filter, cursor, limit)
+	} else {
+		var doctorID uint64
+		doctorID, err = s.doctorIDOf(ctx, access.UserID)
+		if err == nil {
+			rows, err = s.doctorAppointments.ListByDoctorCursor(ctx, doctorID, filter, cursor, limit)
+		}
+	}
+	if err != nil {
+		return empty, err
+	}
+	return model.NewCursorPage(rows, limit, model.DoctorAppointmentItem.GetID), nil
+}
+
+// doctorIDOf 由用户 ID 解析医生档案 ID。
+//
+// 预约表存的是 doctors.id，直接拿 users.id 比较会永远不相等。
+func (s *AppointmentService) doctorIDOf(ctx context.Context, userID uint64) (uint64, error) {
+	doctorID, err := s.doctors.FindIDByUserID(ctx, userID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return 0, apperr.New(errcode.ErrForbidden, "当前账号没有医生档案")
+	}
+	if err != nil {
+		return 0, apperr.Wrap(errcode.ErrInternal, "查询医生档案失败", err)
+	}
+	return doctorID, nil
+}
+
+// validateAppointmentFilter 校验筛选条件。
+//
+// 状态取值必须白名单：直接塞进 SQL 虽然参数化后不会注入，
+// 但拼错的状态会**静默返回空列表**，让人误以为"今天没有预约"。
+func validateAppointmentFilter(filter model.DoctorAppointmentFilter) error {
+	if filter.Date != "" {
+		if _, err := time.ParseInLocation(time.DateOnly, filter.Date, time.Local); err != nil {
+			return apperr.New(errcode.ErrInvalidParam, "日期格式应为 YYYY-MM-DD")
+		}
+	}
+	if filter.Status != "" {
+		switch filter.Status {
+		case model.AppointmentStatusPending, model.AppointmentStatusConfirmed,
+			model.AppointmentStatusCancelled, model.AppointmentStatusExpired:
+		default:
+			return apperr.New(errcode.ErrInvalidParam, "预约状态取值不合法")
+		}
+	}
+	return nil
 }

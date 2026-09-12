@@ -149,7 +149,10 @@ func registerPreconsult(g *gin.RouterGroup, d Deps) {
 	g.POST("/appointments/:id/preconsult/chat", patient, h.Chat)
 	g.GET("/appointments/:id/preconsult/history", patient, h.History)
 	g.POST("/appointments/:id/preconsult/submit", patient, h.Submit)
-	g.GET("/appointments/:id/preconsult/report", patient, h.Report)
+	// 报告允许患者、接诊医生与管理员访问；
+	// 具体归属校验在 service 层（仅凭角色无法判断"这位患者是否归你接诊"）。
+	g.GET("/appointments/:id/preconsult/report",
+		middleware.RequireRole(model.RolePatient, model.RoleDoctor, model.RoleAdmin), h.Report)
 }
 
 // registerAppointments 挂载抢号相关端点。
@@ -175,9 +178,13 @@ func registerAppointments(g *gin.RouterGroup, d Deps) {
 	g.POST("/appointments/:id/cancel", patient, h.Cancel)
 	g.POST("/appointments/:id/checkin", patient, h.CheckIn)
 
+	// 医生接诊列表：挂在 /doctor 下与患者侧的 /appointments 区分开，
+	// 两者响应形态不同（患者看医生，医生看患者），混用端点会让契约模糊。
+	clinical := middleware.RequireRole(model.RoleDoctor, model.RoleAdmin)
+	g.GET("/doctor/appointments", clinical, h.ListForDoctor)
+
 	// 候诊队列供医生与管理员查看
-	g.GET("/schedules/:id/queue",
-		middleware.RequireRole(model.RoleDoctor, model.RoleAdmin), h.Queue)
+	g.GET("/schedules/:id/queue", clinical, h.Queue)
 }
 
 // registerAdmin 挂载仅管理员可用的端点（spec §2.1）。

@@ -82,6 +82,8 @@ type idempotencyStore interface {
 // appointmentStore 是面向患者的预约操作。
 type appointmentStore interface {
 	Create(ctx context.Context, in repository.CreateAppointmentInput) (*model.Appointment, error)
+	// FindByID 供预问诊做资源层归属校验（需要 doctor_id 判断接诊医生）。
+	FindByID(ctx context.Context, id uint64) (*model.Appointment, error)
 	FindByUserAndIdempotencyKey(ctx context.Context, userID uint64, key string) (*model.Appointment, error)
 	FindItemByID(ctx context.Context, userID, appointmentID uint64) (*model.AppointmentItem, error)
 	ListByUserCursor(ctx context.Context, userID, cursor uint64, limit int) ([]model.AppointmentItem, error)
@@ -97,6 +99,15 @@ type appointmentStore interface {
 type appointmentJanitor interface {
 	ListExpiredPending(ctx context.Context, now time.Time, limit int) ([]model.Appointment, error)
 	Expire(ctx context.Context, appointmentID uint64) (*repository.StateChangeResult, error)
+}
+
+// doctorAppointmentStore 是医生/管理员视角的预约列表能力。
+//
+// 与 appointmentStore 分开声明：患者侧完全用不到这两个方法，
+// 混在同一个接口里会让患者侧的测试 fake 被迫实现它们。
+type doctorAppointmentStore interface {
+	ListByDoctorCursor(ctx context.Context, doctorID uint64, filter model.DoctorAppointmentFilter, cursor uint64, limit int) ([]model.DoctorAppointmentItem, error)
+	ListAllCursor(ctx context.Context, filter model.DoctorAppointmentFilter, cursor uint64, limit int) ([]model.DoctorAppointmentItem, error)
 }
 
 // conversationStore 是进行中对话的存取能力。
@@ -126,6 +137,12 @@ type auditStore interface {
 	ListByCursor(ctx context.Context, filter repository.AuditFilter, cursor uint64, limit int) ([]model.AuditLogView, error)
 }
 
+// doctorLookup 是"由用户 ID 查医生档案 ID"的能力。
+// 病历、预约、预问诊三个 service 都需要它（三张表存的是 doctors.id）。
+type doctorLookup interface {
+	FindIDByUserID(ctx context.Context, userID uint64) (uint64, error)
+}
+
 // appointmentReader 是预约读取能力。
 // 与 appointmentStore 分开：病历模块只需要"按 ID 读一条"，不需要全部 7 个方法。
 type appointmentReader interface {
@@ -140,7 +157,6 @@ type recordStore interface {
 	ListByPatientCursor(ctx context.Context, patientID, cursor uint64, limit int) ([]model.MedicalRecordListItem, error)
 	ListByDoctorCursor(ctx context.Context, doctorID, cursor uint64, limit int) ([]model.MedicalRecordListItem, error)
 	ListAllCursor(ctx context.Context, cursor uint64, limit int) ([]model.MedicalRecordListItem, error)
-	FindDoctorIDByUserID(ctx context.Context, userID uint64) (uint64, error)
 }
 
 // syncStore 是 HIS 同步的写入能力。

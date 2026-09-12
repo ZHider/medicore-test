@@ -163,13 +163,16 @@ func (h *PreconsultHandler) Submit(c *gin.Context) {
 }
 
 // Report 返回结构化总结报告，供前端轮询状态与展示结果。
+//
+// 允许患者、接诊医生与管理员访问；具体归属校验在 service 层做
+// （令牌只说明"你是医生"，不说明"这位患者归你接诊"）。
 func (h *PreconsultHandler) Report(c *gin.Context) {
 	appointmentID, ok := uintParam(c, "id")
 	if !ok {
 		return
 	}
 
-	report, err := h.svc.Report(c.Request.Context(), authctx.MustUserID(c), appointmentID)
+	report, err := h.svc.Report(c.Request.Context(), accessOf(c), appointmentID)
 	if err != nil {
 		response.FailErr(c, err)
 		return

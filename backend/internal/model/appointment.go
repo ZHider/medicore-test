@@ -82,12 +82,46 @@ type AppointmentItem struct {
 // GetID 供游标分页取 ID。
 func (a AppointmentItem) GetID() uint64 { return a.ID }
 
+// DoctorAppointmentItem 是医生视角的预约列表项。
+//
+// 与患者视角的 AppointmentItem 形态不同：患者关心"我约了哪位医生"，
+// 医生关心"这位患者是谁、病历写了没有"。因此不复用同一个结构——
+// 硬塞在一起会让两个端点都返回一半无用的字段。
+type DoctorAppointmentItem struct {
+	ID           uint64 `gorm:"column:id" json:"id"`
+	ScheduleID   uint64 `gorm:"column:schedule_id" json:"schedule_id"`
+	PatientID    uint64 `gorm:"column:user_id" json:"patient_id"`
+	PatientName  string `gorm:"column:patient_name" json:"patient_name"`
+	DepartmentID uint64 `gorm:"column:department_id" json:"department_id"`
+	SchedDate    string `gorm:"column:sched_date" json:"sched_date"`
+	TimeSlot     string `gorm:"column:time_slot" json:"time_slot"`
+	QueueNo      *int   `gorm:"column:queue_no" json:"queue_no,omitempty"`
+	Status       string `gorm:"column:status" json:"status"`
+	// HasRecord 标记是否已写病历：医生最需要"还有谁没处理"一眼可见，
+	// 不必为每个预约单独再查一次病历。
+	HasRecord bool   `gorm:"column:has_record" json:"has_record"`
+	CreatedAt string `gorm:"column:created_at" json:"created_at"`
+}
+
+// GetID 供游标分页取 ID。
+func (a DoctorAppointmentItem) GetID() uint64 { return a.ID }
+
+// DoctorAppointmentFilter 是医生预约列表的筛选条件，空值表示不限制该维度。
+type DoctorAppointmentFilter struct {
+	// Date 按就诊日筛选，格式 YYYY-MM-DD。
+	Date string
+	// Status 按预约状态筛选。
+	Status string
+}
+
 // QueueItem 是候诊队列项（医生端）。
 type QueueItem struct {
 	ID        uint64 `gorm:"column:id" json:"appointment_id"`
 	QueueNo   int    `gorm:"column:queue_no" json:"queue_no"`
 	PatientID uint64 `gorm:"column:user_id" json:"patient_id"`
-	// 患者姓名同样需要脱敏后展示，见 service 层。
+	// PatientName 是患者姓名原文，**刻意不脱敏**：
+	// 医生必须能识别面前的患者，打成"张*"会让队列失去意义。
+	// 该接口仅对 doctor/admin 开放，是 spec §2.2 脱敏规则的有意例外。
 	PatientName string `gorm:"column:patient_name" json:"patient_name"`
 	CheckedInAt string `gorm:"column:checked_in_at" json:"checked_in_at"`
 	Status      string `gorm:"column:status" json:"status"`

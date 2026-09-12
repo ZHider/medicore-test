@@ -113,3 +113,27 @@ func (h *AppointmentHandler) Queue(c *gin.Context) {
 	}
 	response.OK(c, gin.H{"items": model.NonNil(items)})
 }
+
+// ListForDoctor 返回医生本人接诊的预约列表（管理员可查全部）。
+//
+// 与患者侧的 ListMine 是两个端点而非一个：两者响应形态不同
+// （患者看医生姓名，医生看患者姓名与病历状态），混在一起会让契约模糊。
+func (h *AppointmentHandler) ListForDoctor(c *gin.Context) {
+	filter := model.DoctorAppointmentFilter{
+		Date:   c.Query("date"),
+		Status: c.Query("status"),
+	}
+
+	page, err := h.svc.ListForDoctor(
+		c.Request.Context(),
+		accessOf(c),
+		filter,
+		c.Query("cursor"),
+		intQuery(c, "size", model.DefaultPageSize),
+	)
+	if err != nil {
+		response.FailErr(c, err)
+		return
+	}
+	response.OK(c, page)
+}

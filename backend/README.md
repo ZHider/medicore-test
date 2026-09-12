@@ -121,7 +121,12 @@ MEDICORE_MYSQL_PASSWORD=medicore123 go run ./cmd/server
 | GET | `/api/v1/appointments?cursor=&size=` | patient | 我的预约，游标分页 |
 | POST | `/api/v1/appointments/:id/cancel` | patient | 取消并回补号源 |
 | POST | `/api/v1/appointments/:id/checkin` | patient | 签到，按签到顺序分配就诊序号 |
+| GET | `/api/v1/doctor/appointments?date=&status=&cursor=&size=` | doctor/admin | **医生接诊列表**（含患者姓名与 `has_record`），游标分页 |
 | GET | `/api/v1/schedules/:id/queue` | doctor/admin | 候诊队列（按序号升序） |
+
+`/doctor/appointments` 与患者侧的 `/appointments` 是**两个端点而非一个**：
+两者响应形态不同（患者关心"我约了哪位医生"，医生关心"这位患者是谁、病历写了没有"），
+合并会让契约模糊、两边的响应各带一半无用字段。管理员按 spec §2.1 的"全部读权限"可查看全部。
 
 ### AI 预问诊（M5）
 
@@ -130,7 +135,11 @@ MEDICORE_MYSQL_PASSWORD=medicore123 go run ./cmd/server
 | POST | `/api/v1/appointments/:id/preconsult/chat` | patient | **SSE 流式对话** |
 | GET | `/api/v1/appointments/:id/preconsult/history` | patient | 取回进行中的对话（刷新页面后恢复上下文） |
 | POST | `/api/v1/appointments/:id/preconsult/submit` | patient | **提交并触发异步总结**，返回 202 |
-| GET | `/api/v1/appointments/:id/preconsult/report` | patient | 查询结构化总结与处理状态 |
+| GET | `/api/v1/appointments/:id/preconsult/report` | patient/doctor/admin | 查询结构化总结与处理状态（**service 层校验归属**，见下） |
+
+报告接口对三种角色开放，但**必须**做资源层归属校验：患者只能看自己的预约，
+医生只能看**本人接诊**的预约，管理员可读全部。少了医生那一层，
+任何医生改一下 URL 里的 ID 就能读到全院患者的病情描述。
 
 ### 病历与处方（M6）
 
@@ -149,6 +158,15 @@ MEDICORE_MYSQL_PASSWORD=medicore123 go run ./cmd/server
 
 数据源通过 `mockhis.Source` 抽象，`SyncService` 只依赖该接口，
 接真实 HIS 时替换实现即可，同步编排逻辑不需要改。
+
+### 审计日志（M6）
+
+| Method | Path | 角色 | 说明 |
+|---|---|---|---|
+| GET | `/api/v1/admin/audit-logs?user_id=&status=&cursor=&size=` | admin | 审计记录查询，游标分页 |
+
+> ⚠️ 三个管理端点的真实前缀是 **`/api/v1/admin/`**，不是 `/api/v1/`。
+> 审计的 `Describe()` 从 `FullPath` 推导资源名，写错前缀会直接导致路径不属于该组而 404。
 
 ### RBAC
 
@@ -426,6 +444,7 @@ nub run backend:vuln      # 需先 go install golang.org/x/vuln/cmd/govulncheck@
 - [x] **M5a** AI 预问诊对话（LLM 抽象 + Mock 故障注入 + 提示词版本化 + SSE 流式 + Redis 对话存储）
 - [x] **M5b** AI 结构化总结（Schema 校验 + 重试降级 + Redis Stream 异步 worker + 死信）
 - [x] **M6** 病历 / 处方 / 审计日志查询 / HIS 同步（模拟数据源 + 增量同步 + 同步日志）
+- [x] **M6+** 医生工作台补全：接诊列表 `/doctor/appointments` + 预问诊报告对医生开放（含归属校验）
 - [ ] M7 前端（Vue 3 + Element Plus）——**按需求暂缓**
 
 ## 病历与同步设计（M6）
@@ -444,6 +463,32 @@ if appt.DoctorID != doctorID {   // doctorID 由 users.id 解析出 doctors.id
 少了这一条，任何医生改一下 URL 里的 ID 就能给别人的患者下诊断。
 注意比较的是 `doctors.id` 而非 `users.id`，直接拿 `users.id` 比较会**永远不相等**
 （`RecordService.doctorIDOf` 专门做这个转换）。
+
+同一个归属校验被预问诊报告接口复用：`GET /appointments/:id/preconsult/report` 对
+患者 / 医生 / 管理员开放，`PreconsultService.authorizeReport` 按角色分流。
+三个 service（病历、预约、预问诊）共用 `service.Access{UserID, Role}`；
+"由 `users.id` 解析 `doctors.id`" 统一收敛到 `DoctorRepo.FindIDByUserID`
+（原先挂在 `MedicalRecordRepo` 下，但三个模块都要用，放在任一业务仓储里都是错误的依赖方向）。
+
+### 医生接诊列表的 `has_record` 用 LEFT JOIN
+
+`GET /doctor/appointments` 要回答医生最关心的问题："还有谁没写病历"。
+
+```sql
+LEFT JOIN medical_records mr ON mr.appointment_id = a.id AND mr.deleted_at IS NULL
+...
+(mr.id IS NOT NULL) AS has_record     -- 注意是 IS NOT NULL，不是 = 0
+```
+
+两个细节：**必须是 LEFT JOIN**（用 INNER JOIN 会让没写病历的预约整条消失，
+恰好把医生最需要看的"待处理"过滤掉了）；`has_record` 必须用 `IS NOT NULL` 判断，
+因为 `mr.id` 对未匹配行是 `NULL`，而 `NULL = 0` 求值为 `NULL`（既非真也非假）。
+
+`medical_records` 是手写 JOIN，所以**必须显式带 `mr.deleted_at IS NULL`** —— GORM 的
+软删除作用域只在 `Model(&Struct{})` 时生效。
+
+筛选条件（`date` / `status`）在 service 层做白名单校验：状态取值拼错时参数化 SQL
+不会报错，只会**静默返回空列表**，让人误以为"今天没有预约"。
 
 ### 同步绝不重置 `remaining`
 
@@ -508,9 +553,9 @@ GET ...&cursor=57
 分两层：单元测试验证业务分支，集成测试验证"跑起来才能确认"的东西。
 
 ```bash
-nub run backend:test              # 单元测试，200 个用例，不依赖外部服务
+nub run backend:test              # 单元测试，218 个用例，不依赖外部服务
 
-# 集成测试，20 个用例：需先启动依赖并设置数据库口令（与 deploy/compose.dev.yml 一致）
+# 集成测试，31 个用例：需先启动依赖并设置数据库口令（与 deploy/compose.dev.yml 一致）
 nub run deps:up
 MEDICORE_MYSQL_PASSWORD=medicore123 nub run backend:test:integration
 
@@ -539,6 +584,7 @@ nub run backend:cover             # 单元测试覆盖率
 | 预约 | 幂等重放返回同一预约、`uk_active` 拒绝重复占号、号源只扣一次、取消回补、签到序号 |
 | 预问诊 | **SSE 响应头与分块事件**、`X-Accel-Buffering: no`、history 恢复、submit 返回 **202**、worker 异步产出报告 |
 | 病历 | 写入后带出患者/医生/科室名与处方明细、重复书写返回 409、**越权读取与越权书写均返回 40302**、管理员可读任意病历 |
+| 医生工作台 | 接诊列表只含本人患者（**不含其他医生的**）、患者访问 403、未登录 401、非法 date/status 返回 400、合法筛选生效；预问诊报告的**四象限归属**（接诊医生可读 / 非接诊医生 40302 / 患者读自己 / 他人患者 40302 / 管理员可读任意） |
 | HIS 同步 | 同步计数与 `success` 状态、**重复同步幂等**、**不重置 `remaining`**、排班日期落在今天之后、患者访问被拒、未知数据源 404、同步日志可查、中文往返无损、医生口令散列逐一独立且强度达标 |
 
 **注**：用 `-coverpkg` 统计 handler 层覆盖率时结果始终为 0，而同一次运行的其它包正常。
@@ -546,7 +592,7 @@ HTTP 响应（404/405/400/401/403 信封、SSE 事件流）只能由 handler 产
 说明 handler 确实被执行，属统计口径问题。因此这里用**行为断言**证明覆盖，
 不给出 handler 的覆盖率数字。
 
-### 单元测试（200 个用例）
+### 单元测试（218 个用例）
 
 service 层不依赖任何外部服务（注入内存实现）：
 
@@ -563,7 +609,7 @@ service 层不依赖任何外部服务（注入内存实现）：
 | `worker` | 成功即确认、未超限失败不确认（留给 XAUTOCLAIM 重投）、超限转死信并标记报告失败、消息体损坏丢弃、投递次数未知时保守重试、Stop 幂等 |
 | `audit` | 路由模板推导资源与动作、背压不阻塞、Stop 排空与幂等、落库失败不退出、超长 UA 截断、空串转 NULL |
 | 集成 | 见上节 |
-| `service` | 认证全流程 + 时序防护；目录查询；**抢号全部分支**（幂等重放、在途拒绝、号源不足、预热重试、数据库失败回补、唯一键恢复、排班不存在/已关闭）；**对账**（双方向修正、键不存在跳过、并发修改时放弃、分批扫描、单条失败不中断）；**预问诊**（空/超长消息、归属与状态校验、上游错误映射、失败不留半截回复、历史累积）；**病历**（非医生被拒、无医生档案、越权写入、预约不存在、预约非进行中、重复书写冲突、归属判定矩阵、**先鉴权再查处方**、按角色分流列表、空字段转 NULL）；**同步**（三阶段顺序、**排班用相对日期**、**医生口令非默认且逐次不同**、手机号加密落库、部分失败计入 failed、全部失败标记 failed、数据源错误上报、先写 running 日志再开工、空数据集、同步日志查询） |
+| `service` | 认证全流程 + 时序防护；目录查询；**抢号全部分支**（幂等重放、在途拒绝、号源不足、预热重试、数据库失败回补、唯一键恢复、排班不存在/已关闭）；**对账**（双方向修正、键不存在跳过、并发修改时放弃、分批扫描、单条失败不中断）；**预问诊**（空/超长消息、归属与状态校验、上游错误映射、失败不留半截回复、历史累积）；**病历**（非医生被拒、无医生档案、越权写入、预约不存在、预约非进行中、重复书写冲突、归属判定矩阵、**先鉴权再查处方**、按角色分流列表、空字段转 NULL）；**同步**（三阶段顺序、**排班用相对日期**、**医生口令非默认且逐次不同**、手机号加密落库、部分失败计入 failed、全部失败标记 failed、数据源错误上报、先写 running 日志再开工、空数据集、同步日志查询）；**医生接诊列表**（患者被拒、非法筛选被拒、合法筛选放行、管理员走全局查询、无医生档案被拒）；**预问诊报告归属**（管理员直通、患者读自己、患者读他人被拒、接诊医生放行、非接诊医生被拒、无医生档案被拒） |
 
 抢号部分最关键的用例是 **`TestGrab_DatabaseFailureReleasesRedisStock`**：
 它断言"Redis 已扣减但 MySQL 回滚"时必须回补号源。若不回补，

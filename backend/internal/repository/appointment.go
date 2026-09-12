@@ -433,3 +433,92 @@ func (r *AppointmentRepo) FindItemByID(
 	}
 	return &item, nil
 }
+
+// doctorAppointmentSelect 是医生视角预约列表的列与连接。
+//
+// 抽出成常量是因为医生列表与管理员列表共用同一形态，
+// 两处各写一遍迟早会改漏一处。
+const doctorAppointmentSelect = `a.id, a.schedule_id, a.user_id,
+	COALESCE(p.name, '') AS patient_name,
+	a.department_id,
+	DATE_FORMAT(a.sched_date, '%Y-%m-%d') AS sched_date,
+	a.time_slot, a.queue_no, a.status,
+	(mr.id IS NOT NULL) AS has_record,
+	DATE_FORMAT(a.created_at, '%Y-%m-%d %H:%i:%s') AS created_at`
+
+// ListByDoctorCursor 游标分页返回某医生接诊的预约。
+//
+// 与患者列表的关键差异：这里附带患者姓名与"是否已写病历"，
+// 让医生一眼看出还有哪些患者没处理。
+func (r *AppointmentRepo) ListByDoctorCursor(
+	ctx context.Context,
+	doctorID uint64,
+	filter model.DoctorAppointmentFilter,
+	cursor uint64,
+	limit int,
+) ([]model.DoctorAppointmentItem, error) {
+	q := r.db.WithContext(ctx).
+		Table("appointments AS a").
+		Select(doctorAppointmentSelect).
+		Joins("LEFT JOIN users AS p ON p.id = a.user_id").
+		// 用 LEFT JOIN 取病历存在性：没写病历的预约也必须出现在列表里，
+		// 否则医生永远看不到"待处理"的那些。
+		Joins("LEFT JOIN medical_records AS mr ON mr.appointment_id = a.id AND mr.deleted_at IS NULL").
+		Where("a.deleted_at IS NULL").
+		Where("a.doctor_id = ?", doctorID)
+
+	q = applyDoctorAppointmentFilter(q, filter)
+
+	if cursor > 0 {
+		q = q.Where("a.id < ?", cursor)
+	}
+
+	var items []model.DoctorAppointmentItem
+	if err := q.Order("a.id DESC").Limit(limit + 1).Scan(&items).Error; err != nil {
+		return nil, fmt.Errorf("list appointments by doctor: %w", err)
+	}
+	return items, nil
+}
+
+// ListAllCursor 游标分页返回全部预约，供管理员使用（spec §2.1：管理员拥有全部读权限）。
+func (r *AppointmentRepo) ListAllCursor(
+	ctx context.Context,
+	filter model.DoctorAppointmentFilter,
+	cursor uint64,
+	limit int,
+) ([]model.DoctorAppointmentItem, error) {
+	q := r.db.WithContext(ctx).
+		Table("appointments AS a").
+		Select(doctorAppointmentSelect).
+		Joins("LEFT JOIN users AS p ON p.id = a.user_id").
+		Joins("LEFT JOIN medical_records AS mr ON mr.appointment_id = a.id AND mr.deleted_at IS NULL").
+		Where("a.deleted_at IS NULL")
+
+	q = applyDoctorAppointmentFilter(q, filter)
+
+	if cursor > 0 {
+		q = q.Where("a.id < ?", cursor)
+	}
+
+	var items []model.DoctorAppointmentItem
+	if err := q.Order("a.id DESC").Limit(limit + 1).Scan(&items).Error; err != nil {
+		return nil, fmt.Errorf("list all appointments: %w", err)
+	}
+	return items, nil
+}
+
+// applyDoctorAppointmentFilter 追加筛选条件。
+//
+// 日期与状态都走参数化条件：日期用 DATE(sched_date) 比较而不是拼字符串，
+// 避免把用户输入直接嵌进 SQL。
+func applyDoctorAppointmentFilter(
+	q *gorm.DB, filter model.DoctorAppointmentFilter,
+) *gorm.DB {
+	if filter.Date != "" {
+		q = q.Where("a.sched_date = ?", filter.Date)
+	}
+	if filter.Status != "" {
+		q = q.Where("a.status = ?", filter.Status)
+	}
+	return q
+}

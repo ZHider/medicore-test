@@ -179,23 +179,3 @@ func (r *MedicalRecordRepo) listByCursor(
 	}
 	return items, nil
 }
-
-// FindDoctorIDByUserID 返回医生档案 ID。
-//
-// 病历表存的是 doctors.id 而非 users.id，因此资源归属校验必须先做这次转换。
-func (r *MedicalRecordRepo) FindDoctorIDByUserID(ctx context.Context, userID uint64) (uint64, error) {
-	var doctorID uint64
-
-	err := r.db.WithContext(ctx).
-		Model(&model.Doctor{}).
-		Where("user_id = ? AND status = ?", userID, model.StatusActive).
-		Limit(1).
-		Pluck("id", &doctorID).Error
-	if err != nil {
-		return 0, fmt.Errorf("find doctor by user: %w", err)
-	}
-	if doctorID == 0 {
-		return 0, ErrNotFound
-	}
-	return doctorID, nil
-}

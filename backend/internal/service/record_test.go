@@ -82,17 +82,6 @@ func (f *fakeRecordStore) ListAllCursor(context.Context, uint64, int) ([]model.M
 	return f.allList, nil
 }
 
-func (f *fakeRecordStore) FindDoctorIDByUserID(_ context.Context, userID uint64) (uint64, error) {
-	if f.doctorIDErr != nil {
-		return 0, f.doctorIDErr
-	}
-	id, ok := f.doctorIDByU[userID]
-	if !ok {
-		return 0, repository.ErrNotFound
-	}
-	return id, nil
-}
-
 type fakeAppointmentReader struct {
 	appt *model.Appointment
 	err  error
@@ -139,20 +128,26 @@ func newRecordFixture(t *testing.T) *recordFixture {
 		Status:   model.AppointmentStatusConfirmed,
 	}}
 
-	svc := NewRecordService(RecordDeps{Records: store, Appointments: appts})
+	// doctorLookup 现在由 DoctorRepo 提供，不再是 recordStore 的方法。
+	// 用 byUser 映射而非单值：测试里有"其他医生"的场景，单值无法表达。
+	svc := NewRecordService(RecordDeps{
+		Records:      store,
+		Appointments: appts,
+		Doctors:      &fakeDoctorLookup{byUser: store.doctorIDByU},
+	})
 	return &recordFixture{svc: svc, store: store, appts: appts}
 }
 
-func doctorAccess(userID uint64) RecordAccess {
-	return RecordAccess{UserID: userID, Role: model.RoleDoctor}
+func doctorAccess(userID uint64) Access {
+	return Access{UserID: userID, Role: model.RoleDoctor}
 }
 
-func patientAccess(userID uint64) RecordAccess {
-	return RecordAccess{UserID: userID, Role: model.RolePatient}
+func patientAccess(userID uint64) Access {
+	return Access{UserID: userID, Role: model.RolePatient}
 }
 
-func adminAccess() RecordAccess {
-	return RecordAccess{UserID: 1, Role: model.RoleAdmin}
+func adminAccess() Access {
+	return Access{UserID: 1, Role: model.RoleAdmin}
 }
 
 func writeRequest() model.WriteRecordRequest {
@@ -251,7 +246,7 @@ func TestRecord_Write_DuplicateIsConflict(t *testing.T) {
 func TestRecord_Get_OwnershipMatrix(t *testing.T) {
 	tests := []struct {
 		name     string
-		access   RecordAccess
+		access   Access
 		wantCode errcode.Code // 0 表示应当成功
 	}{
 		{"患者看自己的病历", patientAccess(patientID), 0},
@@ -321,7 +316,7 @@ func TestRecord_Get_AuthorizesBeforeLoadingPrescriptions(t *testing.T) {
 func TestRecord_ListMine_RoutesByRole(t *testing.T) {
 	tests := []struct {
 		name     string
-		access   RecordAccess
+		access   Access
 		wantKind string
 	}{
 		{"患者查自己的", patientAccess(patientID), "patient"},
@@ -344,7 +339,7 @@ func TestRecord_ListMine_RoutesByRole(t *testing.T) {
 func TestRecord_ListMine_UnknownRoleIsForbidden(t *testing.T) {
 	f := newRecordFixture(t)
 
-	_, err := f.svc.ListMine(context.Background(), RecordAccess{UserID: 1, Role: "guest"}, "", 20)
+	_, err := f.svc.ListMine(context.Background(), Access{UserID: 1, Role: "guest"}, "", 20)
 
 	assert.Equal(t, errcode.ErrForbidden, apperr.Code(err))
 }

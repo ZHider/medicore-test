@@ -47,6 +47,7 @@ type PreconsultDeps struct {
 	Conversation  conversationStore
 	Reports       reportStore
 	SummaryQueue  summaryQueue
+	Doctors       doctorLookup
 	Client        llm.Client
 	Validator     *SummaryValidator
 	Log           *zap.Logger
@@ -62,6 +63,7 @@ type PreconsultService struct {
 	conversation  conversationStore
 	reports       reportStore
 	summaryQueue  summaryQueue
+	doctors       doctorLookup
 	client        llm.Client
 	validator     *SummaryValidator
 	log           *zap.Logger
@@ -87,6 +89,7 @@ func NewPreconsultService(d PreconsultDeps) *PreconsultService {
 		conversation:  d.Conversation,
 		reports:       d.Reports,
 		summaryQueue:  d.SummaryQueue,
+		doctors:       d.Doctors,
 		client:        d.Client,
 		validator:     d.Validator,
 		log:           log,

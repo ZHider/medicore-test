@@ -1,7 +1,7 @@
 # AGENTS.md — MediCore 项目交接说明
 
 > **给新 agent 的第一份文件。** 读完这份就能开始工作；需要细节时按文中的指引跳转。
-> 最后更新：M6 完成 + 代码审视之后（`8eca3e2`）。
+> 最后更新：M6 + 医生工作台补全之后（提交历史见 `docs/HANDOVER.md` §1）。
 
 ---
 
@@ -11,8 +11,9 @@
 定位是**展示全栈工程能力与 AI Vibe Coding 实践**的求职项目，因此代码质量与"过程留痕"同等重要。
 
 - **规格来源**：`spec.md`（Single Source of Truth，v2.0）
-- **当前状态**：后端 M1–M6 全部完成并通过实测；前端仅有脚手架；未做全栈 compose 编排
-- **规模**：生产 84 文件 / 9208 行；测试 22 文件 / 5008 行；220 个用例全部通过
+- **当前状态**：后端 M1–M6 全部完成并通过实测（29 个端点）；前端仅有脚手架；未做全栈 compose 编排
+- **规模**：生产 85 文件 / 9519 行；测试 25 文件 / 5578 行；249 个用例全部通过
+- **覆盖率**：整体 32.2%（`service` 75.9% 是核心保障）
 
 ---
 
@@ -26,7 +27,7 @@ nub run deps:up                    # 等价于 docker compose -f deploy/compose.
 cd backend && go run ./cmd/genlocal && cd ..
 
 # 3) 跑测试确认环境正常
-nub run backend:test               # 单元测试，200 个用例，不需要外部依赖
+nub run backend:test               # 单元测试，218 个用例，不需要外部依赖
 ```
 
 要跑集成测试还需环境变量：
@@ -34,7 +35,7 @@ nub run backend:test               # 单元测试，200 个用例，不需要外
 ```bash
 # Windows PowerShell
 $env:MEDICORE_MYSQL_PASSWORD='medicore123'
-nub run backend:test:integration   # 20 个用例，需要 mysql + redis 在运行
+nub run backend:test:integration   # 31 个用例，需要 mysql + redis 在运行
 ```
 
 **改了数据库结构后**补一次演示数据：`nub run backend:seed`。
@@ -71,9 +72,13 @@ grep -rn "gin.Context" backend/internal/service
 `service` 在 `deps.go` 里声明**它所需的最小能力接口**（`userStore` / `stockStore` / `reportStore`…），
 不依赖 `repository` 的具体类型。`repository` 的具体类型隐式满足这些接口。
 
-**好处**：service 单测可注入内存实现，完全不依赖 MySQL/Redis（这是 200 个用例能秒级跑完的原因）。
+**好处**：service 单测可注入内存实现，完全不依赖 MySQL/Redis（这是 218 个用例能秒级跑完的原因）。
 
 **新增 service 依赖时**：在 `deps.go` 加接口 + 加内存 fake，**不要**直接引用 `*repository.XxxRepo`。
+
+**接口宁可拆小**：`appointmentStore`（患者侧）与 `doctorAppointmentStore`（医生/管理员侧）
+是分开声明的，虽然实现是同一个 `AppointmentRepo`。理由：患者侧完全用不到医生侧的方法，
+合并会逼着患者侧所有测试 fake 去实现用不到的方法。**按"谁用"拆，不按"谁实现"拆。**
 
 ### 2.3 缓存回源必须脱离调用方取消
 
@@ -206,8 +211,8 @@ worker → XREADGROUP → 抢占 → LLM 总结 → Schema 校验 → 失败重�
 |---|---|
 | `nub run deps:up` / `deps:down` / `deps:reset` | 起/停/重置依赖服务（reset 会删数据卷） |
 | `nub run backend:dev` | 启动后端（需 `MEDICORE_MYSQL_PASSWORD=medicore123`） |
-| `nub run backend:test` | 单元测试（200 用例，无需外部依赖） |
-| `nub run backend:test:integration` | 集成测试（20 用例，需依赖服务 + 口令环境变量） |
+| `nub run backend:test` | 单元测试（218 用例，无需外部依赖） |
+| `nub run backend:test:integration` | 集成测试（31 用例，需依赖服务 + 口令环境变量） |
 | `nub run backend:vet` / `backend:fmt` | 静态检查 / 格式化 |
 | `nub run backend:vuln` | **漏洞扫描**（需先装 govulncheck） |
 | `nub run backend:seed` | 灌入演示数据（幂等） |
@@ -265,6 +270,27 @@ Schema 被误改成空对象时**编译成功、校验永远通过**，降级路
 垃圾数据被当成结构化结果入库且没有任何报错。
 `SummaryValidator.SelfCheck()` 用空对象做反向验证，把这种情况变成启动失败。
 
+### 5.7 端点清单以 `router.go` 为准，不要照抄文档
+
+文档里的路由清单**已经错过两次**：管理端点漏写 `/admin/` 前缀、把已实现的 `POST /admin/sync/:source`
+列为待办。**代码一直是对的，错的是文档** —— 照文档调接口会得到 404，然后开始怀疑代码。
+
+```powershell
+# 唯一可靠的来源：启动一次，gin 会逐条打印真实路由
+$env:MEDICORE_MYSQL_PASSWORD='medicore123'; cd backend; go run ./cmd/server
+```
+
+### 5.8 列表接口的 `LEFT JOIN` 与 `IS NOT NULL`
+
+`GET /doctor/appointments` 要用 `LEFT JOIN medical_records` 判断"写过病历没有"：
+
+- **必须是 LEFT JOIN**。用 INNER JOIN 会让没写病历的预约整条消失 ——
+  恰好过滤掉医生最需要看的"待处理"。
+- 判定要写 `mr.id IS NOT NULL`，**不能**写 `mr.id = 0`。
+  LEFT JOIN 未匹配时 `mr.id` 是 `NULL`，`NULL = 0` 求值为 `NULL`（非真非假），
+  扫进 `bool` 会得到 `false` —— **碰巧结果对，但语义错**，换个判定列就会出错。
+- 手写 JOIN 别忘了 `mr.deleted_at IS NULL`（见 §2.5）。
+
 ---
 
 ## 6. 修改代码时的检查清单
@@ -309,11 +335,12 @@ Schema 被误改成空对象时**编译成功、校验永远通过**，降级路
 
 | 优先级 | 项 | 说明 |
 |---|---|---|
-| **高** | 前端页面 | 仅有脚手架。spec §8 要求登录/挂号/AI 对话/医生工作台/管理看板 |
+| **高** | 前端页面 | 仅有脚手架。spec §8 要求登录/挂号/AI 对话/医生工作台/管理看板（后端接口已全部就绪） |
 | **高** | 全栈 compose 编排 | 目前只有依赖服务的 compose，缺 nginx + 前后端镜像 |
 | 中 | AI Vibe Coding 交付物 | spec §10.3 要求 `docs/ai-vibe-coding/` + ≥5 篇 review。**当前一篇都没有**（G6 验收项） |
 | 中 | 压测报告与 SQL 优化文档 | spec §12.2 要求 `docs/benchmark/`、`docs/sql-optimization.md`。**数据已有**，只差成文 |
-| 低 | `repository` 层覆盖率 | 当前 5%，1628 行 SQL 主要靠集成测试保障 |
+| 中 | **按角色横切复查** | 按"医生"角色走完整工作流时发现 2 处规格缺口（见 `docs/MODULES.md` §6.7）。**患者与管理员角色还没这样查过**，大概率还有同类缺口 |
+| 低 | `repository` 层覆盖率 | 当前 4.8%，约 1700 行 SQL 主要靠 31 个集成测试保障 |
 
 **接手前建议先读**：`docs/HANDOVER.md`（开发历程与教训）→ `docs/ARCHITECTURE.md`（架构细节）
 → `docs/CODE-REVIEW.md`（当前质量状态与已知短板）。

@@ -3,7 +3,7 @@
 > 本文档记录**做过什么、错过什么、还剩什么**。
 > 与 `ARCHITECTURE.md`（讲"系统长什么样"）、`MODULES.md`（讲"每个模块怎么写的"）互补：
 > 这份讲"它是怎么变成现在这样的"。
-> 最后更新：`2ecec12`（M6 完成 + 文档固化）
+> 最后更新：M6 医生工作台补全之后
 
 ---
 
@@ -40,10 +40,11 @@
 | M6-补 | `0bc436d` | 审计日志（补 spec 缺口）+ 抽取 `internal/app` 装配 |
 | M6-测 | `3f0207c` | HTTP 集成测试层 + worker 消费者组自愈 |
 | M6 | `8eca3e2` | 病历 / 处方 / HIS 模拟同步 |
+| **M6+** | 本次提交 | **医生工作台补全**：接诊列表 + 预问诊报告对医生开放（spec §2.1 的两处角色缺口） |
 
 ### 1.2 关键交付物
 
-**后端**（84 文件 / 9208 行生产代码）：
+**后端**（85 文件 / 9519 行生产代码）：
 
 | 模块 | 能力 |
 |---|---|
@@ -52,16 +53,21 @@
 | 预约 | 抢号（幂等 + Lua 原子扣减）、取消、签到排队、候诊队列；cron 超时释放；**号源对账** |
 | AI | SSE 流式对话、异步结构化总结（Schema 校验 + 重试降级 + 死信）、提示词版本化 |
 | 医疗 | 病历与处方写入/读取（含归属校验） |
+| 医生工作台 | 本人接诊列表（含患者姓名与 `has_record`）、预问诊报告对医生开放（含归属校验） |
 | HIS | 模拟数据源同步（upsert、并发限流、同步日志） |
 | 审计 | 异步批量写入审计日志，含资源/动作推导 |
 | 运维 | 健康探针、Prometheus 指标（HTTP / 抢号 / 对账 / LLM / 队列 / 审计） |
 
-**测试**：22 文件 / 5008 行，**220 个用例全部通过**
+**测试**：25 文件 / 5578 行（其中集成 4 文件 / 1338 行），**249 个用例全部通过**
 
 | 类型 | 数量 | 运行方式 |
 |---|---|---|
-| 单元测试 | 200 | `nub run backend:test`（无需外部依赖） |
-| 集成测试 | 20 | `nub run backend:test:integration`（需 mysql + redis） |
+| 单元测试 | 218 | `nub run backend:test`（无需外部依赖） |
+| 集成测试 | 31 | `nub run backend:test:integration`（需 mysql + redis） |
+
+**覆盖率**：整体 **32.2%**（`service` 75.9%、`audit` 95.6%、`worker` 89.9%、
+`llm` 89.5%、`prompts` 88.2%、`secret` 87.8%、`jwt` 91.7%、`mask` 100%；
+`repository` 4.8%、`handler` 单元 0%，二者由集成测试保障行为）
 
 **文档**：`spec.md`、`FEASIBILITY.md`、`docs/schema.sql`、`docs/database-review.md`、
 `docs/CODE-REVIEW.md`、`AGENTS.md`、`backend/README.md`
@@ -229,6 +235,22 @@ git gc --prune=now                                    # 3. 物理删除悬空对
 | 202 响应 `trace_id` 为空 | 直接构造 `response.Body` 漏掉了链路 ID，违反 spec §9.2 |
 | `ratelimit_errors_total` 缺失 | 注释声称有，实际没有（见 §2.1-C） |
 | Gin 传递引入无用依赖 | `mongo-driver` + `quic-go` 被编译进二进制，攻击面被放大 |
+| **管理端点清单漏写 `/admin/` 前缀** | `docs/ARCHITECTURE.md` 与 `docs/MODULES.md` 都写成 `/api/v1/audit-logs`，实际是 `/api/v1/admin/audit-logs`。**代码一直是对的，错的是文档** |
+| **已实现的端点被列为"未完成"** | `POST /admin/sync/:source` 早已实现，文档里却写着待办 |
+
+后两条的教训：**路由清单不要手写**。以 `backend/internal/router/router.go`
+或 gin 启动时的 debug 输出为准，那是唯一不会骗人的来源。
+
+### 2.6 医生工作台补全这一轮的错误
+
+| 错误 | 表现 | 根因 |
+|---|---|---|
+| 测试 fake 被"简化"弄坏既有用例 | 把 map 形式的医生查询改成单值，`TestRecord_Write_RejectsOtherDoctorsPatient` 与 `TestRecord_Write_RequiresDoctorProfile` 直接失败 | 改夹具时只看了新用例的需要，**没跑全包** |
+| 测试辅助函数重复定义 | `doctorAccess`/`patientAccess`/`adminAccess` 在两个测试文件里各写了一份 | 新建文件时没先 `grep` 一遍 |
+| 注释与实现矛盾 | `QueueItem.PatientName` 注释写着"需要脱敏"，实现却是刻意不脱敏 | 实现改了，注释没跟上 |
+
+**共同点仍是"收尾动作被跳过"**：改完夹具立刻跑一次全包测试，与新建文件前 `grep` 一次，
+两步都能挡住。这与 §5.4 的判断一致——问题不在设计能力，在于每步之后的确认动作。
 
 ---
 
@@ -248,13 +270,14 @@ git gc --prune=now                                    # 3. 物理删除悬空对
 | `docs/ai-vibe-coding/` | spec §10.3 要求 WORKFLOW.md + prompts + **≥5 篇** review。**当前一篇都没有**（G6 验收项） |
 | `docs/benchmark/` + `docs/sql-optimization.md` | spec §12.2 要求压测报告与 EXPLAIN 对比。**数据已有**（284 倍、零超卖），只差成文 |
 | 前端管理看板拉 `/metrics` | spec §8.1 要求 ECharts 渲染系统健康度 |
+| **按角色横切复查其余角色** | 本轮按**医生**角色走完整工作流，发现 2 处真实缺口（接诊列表缺失、报告接口没对医生开放）。**患者与管理员角色尚未同样复查一遍** —— 大概率还有同类缺口（见 §2.6 与 `MODULES.md` §6.7） |
 
 ### 3.3 低优先级 / 可选
 
 | 项 | 说明 |
 |---|---|
-| `repository` 层覆盖率 | 当前 5%。1628 行 SQL 主要靠 20 个集成测试保障 |
-| `handler` 单元覆盖率 | 0%，但集成测试已覆盖全部 25 个端点的行为 |
+| `repository` 层覆盖率 | 当前 4.8%。约 1700 行 SQL 主要靠 31 个集成测试保障 |
+| `handler` 单元覆盖率 | 0%，但集成测试已覆盖全部 29 个端点的行为 |
 | `config` 覆盖率 33.7% | 密钥校验已覆盖，配置加载分支未覆盖 |
 | 真实 LLM 接入 | `llm.NewClient` 对 `openai`/`dashscope`/`deepseek` **明确返回错误**（刻意设计，见 §4.3） |
 | `audit_logs` 分区/归档 | 写入最频繁的表，长期运行需要 TTL 或分区 |
@@ -333,9 +356,9 @@ cd D:\Hider\Code\MediCore
 nub run deps:up
 $env:MEDICORE_MYSQL_PASSWORD='medicore123'
 nub run backend:vet                    # 应为 0
-nub run backend:test                   # 200 个用例通过
-nub run backend:test:integration       # 20 个用例通过
+nub run backend:test                   # 218 个用例通过
+nub run backend:test:integration       # 31 个用例通过
 nub run backend:vuln                   # No vulnerabilities found
 ```
 
-**当前预期结果**（`8eca3e2`）：全部通过，漏洞 0，集成测试 20/20。
+**当前预期结果**：全部通过，漏洞 0，集成测试 31/31，单元测试 218/218。

@@ -169,13 +169,16 @@ func Build(cfg *config.Config, log *zap.Logger) (*App, error) {
 	})
 
 	appointmentRepo := repository.NewAppointmentRepo(db)
+	doctorRepo := repository.NewDoctorRepo(db, cache)
 	appointmentSvc := service.NewAppointmentService(service.AppointmentDeps{
-		Appointments: appointmentRepo,
-		Janitor:      appointmentRepo,
-		Schedules:    repository.NewScheduleRepo(db),
-		Stock:        repository.NewStockRepo(rdb),
-		Idempotency:  repository.NewIdempotencyRepo(rdb),
-		Log:          log,
+		Appointments:       appointmentRepo,
+		DoctorAppointments: appointmentRepo,
+		Doctors:            doctorRepo,
+		Janitor:            appointmentRepo,
+		Schedules:          repository.NewScheduleRepo(db),
+		Stock:              repository.NewStockRepo(rdb),
+		Idempotency:        repository.NewIdempotencyRepo(rdb),
+		Log:                log,
 	})
 
 	summaryQueueRepo := repository.NewSummaryQueueRepo(rdb)
@@ -184,6 +187,7 @@ func Build(cfg *config.Config, log *zap.Logger) (*App, error) {
 		Conversation:  repository.NewConversationRepo(rdb),
 		Reports:       repository.NewAIReportRepo(db),
 		SummaryQueue:  summaryQueueRepo,
+		Doctors:       doctorRepo,
 		Client:        llmClient,
 		Validator:     summaryValidator,
 		Log:           log,
@@ -201,6 +205,7 @@ func Build(cfg *config.Config, log *zap.Logger) (*App, error) {
 	recordSvc := service.NewRecordService(service.RecordDeps{
 		Records:      repository.NewMedicalRecordRepo(db),
 		Appointments: appointmentRepo,
+		Doctors:      repository.NewDoctorRepo(db, cache),
 		Log:          log,
 	})
 

@@ -118,6 +118,28 @@ func (r *DoctorRepo) ListDepartmentsOfDoctor(ctx context.Context, doctorID uint6
 	return items, nil
 }
 
+// FindIDByUserID 由用户 ID 解析医生档案 ID。
+//
+// 病历、预约、预问诊三张表存的都是 doctors.id，直接拿 users.id 比较会永远不相等。
+// 这个方法放在 DoctorRepo 而不是某个业务仓储里：它是医生档案的基本查询，
+// 三个 service 都要用，挂在任一业务模块下都会造成奇怪的依赖方向。
+func (r *DoctorRepo) FindIDByUserID(ctx context.Context, userID uint64) (uint64, error) {
+	var doctorID uint64
+
+	err := r.db.WithContext(ctx).
+		Model(&model.Doctor{}).
+		Where("user_id = ? AND status = ?", userID, model.StatusActive).
+		Limit(1).
+		Pluck("id", &doctorID).Error
+	if err != nil {
+		return 0, fmt.Errorf("find doctor by user: %w", err)
+	}
+	if doctorID == 0 {
+		return 0, ErrNotFound
+	}
+	return doctorID, nil
+}
+
 // DepartmentDoctorsCacheKeys 返回科室医生列表的缓存键。
 // 导出是为了让写路径（如数据初始化工具）也能精确失效，而不必复制键前缀。
 func DepartmentDoctorsCacheKeys(departmentIDs ...uint64) []string {

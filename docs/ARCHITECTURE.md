@@ -80,7 +80,7 @@ type stockStore interface {
 
 **带来三个好处**：
 
-1. **可测试**：service 单测注入内存 fake，200 个用例秒级跑完，不需要 MySQL/Redis。
+1. **可测试**：service 单测注入内存 fake，218 个用例秒级跑完，不需要 MySQL/Redis。
 2. **耦合可见**：接口就是 service 到底用了哪些能力的清单。
 3. **接口保持最小**：`appointmentJanitor` 只声明 `ListExpiredPending` + `Expire`，
    定时任务不必实现 `appointmentStore` 的全部 7 个方法。
@@ -330,7 +330,7 @@ phone_hash   CHAR(64)         HMAC-SHA256(pepper, phone)，ASCII + ascii_bin
 
 ## 五、可观测性
 
-### 5.0 全部端点清单（28 条）
+### 5.0 全部端点清单（29 条）
 
 | 分类 | Method | Path | 角色 |
 |---|---|---|---|
@@ -350,16 +350,22 @@ phone_hash   CHAR(64)         HMAC-SHA256(pepper, phone)，ASCII + ascii_bin
 | | POST | `/api/v1/appointments/:id/cancel` | patient |
 | | POST | `/api/v1/appointments/:id/checkin` | patient |
 | | GET | `/api/v1/schedules/:id/queue` | doctor / admin |
+| **医生工作台** | GET | `/api/v1/doctor/appointments` | doctor / admin（游标分页，`date`/`status` 筛选） |
 | **AI** | POST | `/api/v1/appointments/:id/preconsult/chat` | patient（**SSE**） |
 | | GET | `/api/v1/appointments/:id/preconsult/history` | patient |
 | | POST | `/api/v1/appointments/:id/preconsult/submit` | patient（返回 **202**） |
-| | GET | `/api/v1/appointments/:id/preconsult/report` | patient |
+| | GET | `/api/v1/appointments/:id/preconsult/report` | patient / doctor / admin（**service 层校验归属**） |
 | **医疗** | POST | `/api/v1/appointments/:id/record` | doctor |
 | | GET | `/api/v1/appointments/:id/record` | 任意登录角色 |
 | | GET | `/api/v1/records` | 任意登录角色（游标分页） |
-| **管理** | GET | `/api/v1/audit-logs` | admin（游标分页） |
-| | POST | `/api/v1/sync/:source` | admin |
-| | GET | `/api/v1/sync-logs` | admin（游标分页） |
+| **管理** | GET | `/api/v1/admin/audit-logs` | admin（游标分页） |
+| | POST | `/api/v1/admin/sync/:source` | admin |
+| | GET | `/api/v1/admin/sync-logs` | admin（游标分页） |
+
+> ⚠️ 三个管理端点的前缀是 **`/api/v1/admin/`**。本文档与 `docs/MODULES.md` 曾漏写
+> `/admin/` 段，照文档调接口会得到 404。
+> **校对方式**：启动一次 `go run ./cmd/server`，gin 的 debug 输出会逐条打印真实路由，
+> 那是比任何文档都可靠的来源。
 
 **统一响应信封**：`{code, message, data, trace_id}`；成功 `code=0`。
 未匹配路由 → 40003，方法不支持 → 40006（同样是 JSON 信封）。
@@ -403,8 +409,8 @@ Zap JSON，字段 `trace_id / method / path / status / latency_ms / client_ip / 
 
 | 层 | 数量 | 运行 | 覆盖 |
 |---|---|---|---|
-| 单元 | 200 | `nub run backend:test` | service 核心状态机、工具包、worker 决策 |
-| 集成 | 20 | `nub run backend:test:integration` | 全部 25 个端点的行为、RBAC、审计 |
+| 单元 | 218 | `nub run backend:test` | service 核心状态机、工具包、worker 决策 |
+| 集成 | 31 | `nub run backend:test:integration` | 全部 29 个端点的行为、RBAC、审计 |
 
 **集成测试复用 `app.Build()` 的同一套装配**，因此覆盖真实中间件顺序与依赖注入。
 用独立数据库 `medicore_test` 与 Redis DB 1，由 `deploy/mysql/init-test-db.sql` 创建。
@@ -413,14 +419,14 @@ Zap JSON，字段 `trace_id / method / path / status / latency_ms / client_ip / 
 
 | 包 | 覆盖率 | 评价 |
 |---|---|---|
-| `mask` / `jwt` / `worker` / `llm` / `prompts` / `secret` | 88–100% | ✅ |
-| `service` | 72.9% | ✅ 核心价值所在 |
-| `model` | 51.2% | 可接受 |
-| **`repository`** | **5%** | ⚠️ 1628 行 SQL 主要靠集成测试保障 |
+| `mask` / `audit` / `jwt` / `worker` / `llm` / `prompts` / `secret` | 88–100% | ✅ |
+| `service` | 75.9% | ✅ 核心价值所在 |
+| `model` | 50.0% | 可接受 |
+| **`repository`** | **4.8%** | ⚠️ 约 1700 行 SQL 主要靠集成测试保障 |
 | **`handler`** | **0%（单元）** | ⚠️ 但集成测试覆盖了全部端点行为 |
 
-**整体 31.5%，但这个数字低估了实际保障**：spec §11.1 要求的是"覆盖 service 层核心逻辑"，
-而 service 达到 72.9%。真实盲区是 repository 的 SQL 细节（游标分页边界、
+**整体 32.2%，但这个数字低估了实际保障**：spec §11.1 要求的是"覆盖 service 层核心逻辑"，
+而 service 达到 75.9%。真实盲区是 repository 的 SQL 细节（游标分页边界、
 软删除条件遗漏、`RowsAffected` 分支）。
 
 ### 6.3 反向验证过的测试

@@ -13,20 +13,11 @@ import (
 	"github.com/medicore/backend/internal/repository"
 )
 
-// RecordAccess 是访问者身份，用于资源层归属校验。
-//
-// 为什么需要它：路由层的 RBAC 只能判断"这个角色能不能访问这类接口"，
-// 无法回答"这个患者能不能看**这一份**病历"。spec §2.2 要求双层校验，
-// 缺了资源层校验，任何患者只要改一下 URL 里的 ID 就能读到别人的病历。
-type RecordAccess struct {
-	UserID uint64
-	Role   model.Role
-}
-
 // RecordDeps 是 RecordService 的依赖集合。
 type RecordDeps struct {
 	Records      recordStore
 	Appointments appointmentReader
+	Doctors      doctorLookup
 	Log          *zap.Logger
 }
 
@@ -34,6 +25,7 @@ type RecordDeps struct {
 type RecordService struct {
 	records      recordStore
 	appointments appointmentReader
+	doctors      doctorLookup
 	log          *zap.Logger
 }
 
@@ -43,12 +35,17 @@ func NewRecordService(d RecordDeps) *RecordService {
 	if log == nil {
 		log = zap.NewNop()
 	}
-	return &RecordService{records: d.Records, appointments: d.Appointments, log: log}
+	return &RecordService{
+		records:      d.Records,
+		appointments: d.Appointments,
+		doctors:      d.Doctors,
+		log:          log,
+	}
 }
 
 // Write 由接诊医生书写病历与处方。
 func (s *RecordService) Write(
-	ctx context.Context, access RecordAccess, appointmentID uint64, req model.WriteRecordRequest,
+	ctx context.Context, access Access, appointmentID uint64, req model.WriteRecordRequest,
 ) (*model.MedicalRecordView, error) {
 	if access.Role != model.RoleDoctor {
 		return nil, apperr.New(errcode.ErrForbidden, "只有医生可以书写病历")
@@ -106,7 +103,7 @@ func (s *RecordService) Write(
 
 // Get 返回某预约的病历，并做资源层归属校验。
 func (s *RecordService) Get(
-	ctx context.Context, access RecordAccess, appointmentID uint64,
+	ctx context.Context, access Access, appointmentID uint64,
 ) (*model.MedicalRecordView, error) {
 	view, err := s.records.FindViewByAppointment(ctx, appointmentID)
 	if errors.Is(err, repository.ErrNotFound) {
@@ -130,7 +127,7 @@ func (s *RecordService) Get(
 
 // ListMine 游标分页返回当前身份可见的病历列表。
 func (s *RecordService) ListMine(
-	ctx context.Context, access RecordAccess, cursorRaw string, size int,
+	ctx context.Context, access Access, cursorRaw string, size int,
 ) (model.CursorPage[model.MedicalRecordListItem], error) {
 	var empty model.CursorPage[model.MedicalRecordListItem]
 
@@ -164,7 +161,7 @@ func (s *RecordService) ListMine(
 
 // authorize 实现资源层归属校验。
 func (s *RecordService) authorize(
-	ctx context.Context, access RecordAccess, view *model.MedicalRecordView,
+	ctx context.Context, access Access, view *model.MedicalRecordView,
 ) error {
 	switch access.Role {
 	case model.RoleAdmin:
@@ -195,7 +192,7 @@ func (s *RecordService) authorize(
 // doctorIDOf 由用户 ID 解析医生档案 ID。
 // 病历表存的是 doctors.id，直接拿 users.id 比较会永远不相等。
 func (s *RecordService) doctorIDOf(ctx context.Context, userID uint64) (uint64, error) {
-	doctorID, err := s.records.FindDoctorIDByUserID(ctx, userID)
+	doctorID, err := s.doctors.FindIDByUserID(ctx, userID)
 	if errors.Is(err, repository.ErrNotFound) {
 		return 0, apperr.New(errcode.ErrForbidden, "当前账号没有医生档案")
 	}
