@@ -13,6 +13,8 @@
     "backend:vet": "cd backend && go vet ./...",
     "backend:fmt": "cd backend && gofmt -l -w ./cmd ./internal",
     "backend:test": "cd backend && go test ./...",
+    "backend:cover": "cd backend && go test ./... -coverprofile=cover.out && go tool cover -func=cover.out",
+    "backend:vuln": "cd backend && govulncheck ./...",
     "backend:seed": "cd backend && go run ./cmd/seed",
     "backend:genlocal": "cd backend && go run ./cmd/genlocal",
     "backend:loadtest": "cd backend && go run ./cmd/loadtest",

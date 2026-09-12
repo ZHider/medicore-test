@@ -362,6 +362,42 @@ Redis 号源键  : 存在=true 值=0
 工具结束时会自动核对三方数据（成功次数 / MySQL remaining / Redis 号源键）是否自洽，
 任何一项对不上都会以非零退出码失败。
 
+## 依赖与安全
+
+### 依赖面偏大（已知并接受）
+
+```
+直接依赖 15 个（含仅测试用的 miniredis / testify）
+编译进二进制的包 459 个
+二进制体积 ~32 MB（linux/amd64，-s -w）
+```
+
+Gin v1.12 会**传递引入两个本项目完全用不到的重型模块，且都真的被编译进二进制**：
+
+| 模块 | Gin 中的用途 | 我们的实际需要 |
+|---|---|---|
+| `go.mongodb.org/mongo-driver/v2` | BSON 绑定 | 不需要（只用 Redis） |
+| `github.com/quic-go/quic-go` | HTTP/3 | 不需要（只提供 HTTP/1.1 + SSE） |
+
+Gin 内部直接 import，无法用 build tag 关闭。这既解释了二进制体积，
+也意味着**攻击面被无意中放大**——`quic-go` 的历史漏洞会出现在我们的扫描结果里。
+换路由框架的代价远大于收益，因此接受现状，但必须靠扫描持续盯住。
+
+### 漏洞扫描（spec §9.3）
+
+```bash
+nub run backend:vuln      # 需先 go install golang.org/x/vuln/cmd/govulncheck@latest
+```
+
+首次扫描发现 6 个漏洞，**修复 5 个**：`quic-go` 1 个、`edwards25519` 1 个、
+`x/crypto` 4 个中的 3 个。其中 **`x/crypto` 是直接依赖**（bcrypt 就在里面），
+不是"别人的问题"。
+
+残留 1 个：`GO-2026-5932`（`x/crypto`，**官方无修复版本**，且我们的代码未调用该路径），
+只能接受并持续监控。
+
+**建议把 `backend:vuln` 纳入提交前检查**——本次是手工跑才发现这些漏洞的。
+
 ## 模块进度
 
 - [x] **M1** 配置 / 日志 / 中间件链 / 健康检查 / 分层骨架 / dev compose
