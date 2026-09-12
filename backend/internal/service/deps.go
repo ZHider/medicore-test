@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/medicore/backend/internal/llm"
 	"github.com/medicore/backend/internal/model"
 	"github.com/medicore/backend/internal/repository"
 )
@@ -96,4 +97,11 @@ type appointmentStore interface {
 type appointmentJanitor interface {
 	ListExpiredPending(ctx context.Context, now time.Time, limit int) ([]model.Appointment, error)
 	Expire(ctx context.Context, appointmentID uint64) (*repository.StateChangeResult, error)
+}
+
+// conversationStore 是进行中对话的存取能力。
+type conversationStore interface {
+	Append(ctx context.Context, appointmentID uint64, msg llm.Message) error
+	List(ctx context.Context, appointmentID uint64) ([]llm.Message, error)
+	Clear(ctx context.Context, appointmentID uint64) error
 }

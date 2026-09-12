@@ -29,6 +29,7 @@ type Deps struct {
 	Auth         *service.AuthService
 	Catalog      *service.CatalogService
 	Appointments *service.AppointmentService
+	Preconsult   *service.PreconsultService
 	JWTManager   *jwt.Manager
 }
 
@@ -105,6 +106,7 @@ func registerSecuredRoutes(r *gin.Engine, d Deps) {
 	registerAuthSecured(secured, d)
 	registerCatalog(secured, d)
 	registerAppointments(secured, d)
+	registerPreconsult(secured, d)
 }
 
 func registerAuthSecured(g *gin.RouterGroup, d Deps) {
@@ -123,6 +125,18 @@ func registerCatalog(g *gin.RouterGroup, d Deps) {
 	g.GET("/departments/:id/schedules", h.ListSchedulesByDepartment)
 	g.GET("/doctors/:id", h.DoctorDetail)
 	g.GET("/doctors/:id/schedules", h.ListSchedulesByDoctor)
+}
+
+// registerPreconsult 挂载 AI 预问诊端点。
+//
+// 对话走 SSE：POST + text/event-stream，而不是 EventSource
+// （后者只支持 GET，无法携带消息体与 Authorization 头）。
+func registerPreconsult(g *gin.RouterGroup, d Deps) {
+	h := handler.NewPreconsultHandler(d.Preconsult)
+	patient := middleware.RequireRole(model.RolePatient)
+
+	g.POST("/appointments/:id/preconsult/chat", patient, h.Chat)
+	g.GET("/appointments/:id/preconsult/history", patient, h.History)
 }
 
 // registerAppointments 挂载抢号相关端点。

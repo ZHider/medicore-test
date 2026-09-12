@@ -49,3 +49,16 @@ security:
 scheduler:
   expire_scan: "@every 1m"      # 释放超时未确认的预约
   stock_reconcile: "@every 5m"  # 以 MySQL 为准校准 Redis 号源
+
+# AI 预问诊上游。
+# 当前仅 mock 可用（决策 #3：先用 Mock 降级，不依赖外部配额）；
+# 配置 openai/dashscope/deepseek 会在启动时明确报错，而不是静默回退到 mock。
+llm:
+  provider: mock
+  timeout: 30s          # 单次上游调用超时
+  mock:
+    delta_delay_ms: 20  # 每段增量的间隔，模拟打字机
+    # 结构化总结的返回模式，用于验证降级路径：
+    #   valid | invalid_json | invalid_schema | error | timeout
+    summary_mode: valid
+    stream_error_at: 0  # >0 时在第 N 段后注入流式错误

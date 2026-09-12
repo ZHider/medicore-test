@@ -19,12 +19,14 @@ import (
 
 	"github.com/medicore/backend/internal/config"
 	"github.com/medicore/backend/internal/jwt"
+	"github.com/medicore/backend/internal/llm"
 	"github.com/medicore/backend/internal/logger"
 	"github.com/medicore/backend/internal/repository"
 	"github.com/medicore/backend/internal/router"
 	"github.com/medicore/backend/internal/scheduler"
 	"github.com/medicore/backend/internal/secret"
 	"github.com/medicore/backend/internal/service"
+	"github.com/medicore/backend/prompts"
 )
 
 func main() {
@@ -127,6 +129,30 @@ func run() error {
 		Log:          log,
 	})
 
+	// AI 预问诊：提示词编进二进制，版本号随结果入库以便追溯
+	systemPrompt, err := prompts.PreconsultSystemPrompt(prompts.PreconsultLatest)
+	if err != nil {
+		return fmt.Errorf("加载预问诊提示词: %w", err)
+	}
+	llmClient, err := llm.NewClient(cfg.LLM.Provider, llm.MockConfig{
+		DeltaDelay:    time.Duration(cfg.LLM.Mock.DeltaDelayMS) * time.Millisecond,
+		SummaryMode:   llm.SummaryMode(cfg.LLM.Mock.SummaryMode),
+		StreamErrorAt: cfg.LLM.Mock.StreamErrorAt,
+	}, cfg.LLM.Timeout)
+	if err != nil {
+		return fmt.Errorf("初始化 LLM 客户端: %w", err)
+	}
+
+	preconsultSvc := service.NewPreconsultService(service.PreconsultDeps{
+		Appointments:  appointmentRepo,
+		Conversation:  repository.NewConversationRepo(rdb),
+		Client:        llmClient,
+		Log:           log,
+		SystemPrompt:  systemPrompt,
+		PromptVersion: prompts.PreconsultLatest,
+		Timeout:       cfg.LLM.Timeout,
+	})
+
 	engine := router.New(router.Deps{
 		Config:       cfg,
 		Logger:       log,
@@ -135,6 +161,7 @@ func run() error {
 		Auth:         authSvc,
 		Catalog:      catalogSvc,
 		Appointments: appointmentSvc,
+		Preconsult:   preconsultSvc,
 		JWTManager:   jwtManager,
 	})
 

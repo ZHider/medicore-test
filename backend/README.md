@@ -123,6 +123,13 @@ MEDICORE_MYSQL_PASSWORD=medicore123 go run ./cmd/server
 | POST | `/api/v1/appointments/:id/checkin` | patient | 签到，按签到顺序分配就诊序号 |
 | GET | `/api/v1/schedules/:id/queue` | doctor/admin | 候诊队列（按序号升序） |
 
+### AI 预问诊（M5）
+
+| Method | Path | 角色 | 说明 |
+|---|---|---|---|
+| POST | `/api/v1/appointments/:id/preconsult/chat` | patient | **SSE 流式对话** |
+| GET | `/api/v1/appointments/:id/preconsult/history` | patient | 取回进行中的对话（刷新页面后恢复上下文） |
+
 ### RBAC
 
 `middleware.RequireRole(model.RoleAdmin, ...)` 挂在 JWT 之后使用。
@@ -143,6 +150,63 @@ MEDICORE_MYSQL_PASSWORD=medicore123 go run ./cmd/server
 | 刷新轮换 | `GETDEL` 原子消费，旧令牌立即失效，杜绝重放窗口 |
 | 限流 | Redis 令牌桶 Lua 脚本（原子）；限流器故障时 fail-open 并留痕 |
 | 错误包装 | `apperr` 携带错误码向上传递，handler 统一转换（spec §3.2 铁律 2） |
+
+## AI 预问诊设计（M5a）
+
+### 为什么流式接口用回调而不是 channel
+
+`llm.Client.ChatStream(ctx, req, onDelta)` 是回调式，而不是返回 `<-chan Chunk`：
+
+channel 方案必须额外起一个 goroutine，并在**成功、出错、取消、调用方提前退出**
+这四条路径上都保证关闭，遗漏任何一条就是 goroutine 泄漏
+（spec §7.2 专门要求处理 `ctx.Done()` 正是为了防这个）。
+回调方案由调用方在自己的 goroutine 里驱动，不存在额外的生命周期问题。
+
+### 错误响应的形式取决于流是否已开始
+
+| 阶段 | 响应形式 |
+|---|---|
+| 流未开始（参数/权限/预约状态校验失败） | 统一 JSON 信封，前端仍可按 `code` 分支 |
+| 流已开始（上游中途失败） | SSE `error` 事件 —— HTTP 状态码早已发出，改不了 |
+
+`startStream()` 刻意延迟到第一次真正要吐数据时才写响应头，
+这样前置校验失败还能用信封，而不是先发 200 再报错。
+
+### 对话存在 Redis 而非直接写报告行
+
+- 每轮都要追加，写 `ai_pre_reports.conversation` JSON 列是"读-改-写"，多标签页会互相覆盖；
+- 报告行应在**提交**时才产生，避免堆积大量 `status=pending` 的空壳记录。
+
+键 `preconsult:conv:{appointmentID}`，TTL 24 小时，上限 40 条防内存打满。
+
+### 失败时不保存半截回复
+
+上游中途失败时**只保留用户消息**，不写入残缺的助手回复——
+留下半截会让下一轮模型看到不完整的上下文，用户重试时反而更混乱。
+用户消息先落库，保证重试时不必重新输入。
+
+### 提示词版本化
+
+`prompts/preconsult_v1.md` 用 `go:embed` 编进二进制。
+好处是不会有"部署时漏拷 prompts 目录"的环境差异，版本号也与代码版本绑定。
+`PromptVersion()` 会随报告入库以便追溯（spec §7.2）。
+
+### Mock 的故障注入不是玩具
+
+`llm.mock.summary_mode` 与 `stream_error_at` 让 G3 的验收标准
+（「100% 通过 Schema 校验**或**优雅降级」）可以被真正验证——
+没有故障注入就只能测到成功路径，降级分支永远是未经验证的代码。
+
+配置真实上游（openai/dashscope/deepseek）会在**启动时明确报错**而不是静默回退到 mock：
+生产环境里"以为接了真模型、其实返回的是假数据"比直接挂掉危险得多。
+
+### 实测
+
+```
+SSE 流式：13 个 delta 事件以约 20ms 间隔逐段到达，末尾 done 事件，总耗时 277ms
+故障注入：3 个 delta 后收到 error 事件 code=50201；历史中只留用户消息，无半截回复
+刷新恢复：GET /preconsult/history 返回完整 4 条对话
+```
 
 ## 抢号设计（spec §7.1，含两处修正）
 
@@ -237,7 +301,8 @@ Redis 号源键  : 存在=true 值=0
 - [x] **M3** 科室 / 医生（多对多）/ 排班查询 + 游标分页 + Redis 缓存（含缓存击穿防护）
 - [x] **M4** 抢号（幂等 + Lua 原子扣减 + 预热自愈 + 乐观条件 + cron 超时释放 + 签到队列）
 - [x] **M4.5** 号源对账（以 MySQL 为准校准 Redis，比对更新防覆盖）
-- [ ] M5 AI 预问诊（Mock LLM + SSE + Stream 异步总结 + Schema 降级）
+- [x] **M5a** AI 预问诊对话（LLM 抽象 + Mock 故障注入 + 提示词版本化 + SSE 流式 + Redis 对话存储）
+- [ ] M5b AI 结构化总结（JSON Schema 校验 + 重试降级 + Redis Stream 异步 worker）
 - [ ] M6 病历 / 处方 / 审计 / HIS 同步
 
 ## 演示数据
@@ -280,7 +345,7 @@ GET ...&cursor=57
 nub run backend:test      # go test ./...
 ```
 
-96 个用例，service 层不依赖任何外部服务（注入内存实现）：
+121 个用例，service 层不依赖任何外部服务（注入内存实现）：
 
 | 包 | 覆盖内容 |
 |---|---|
@@ -290,7 +355,8 @@ nub run backend:test      # go test ./...
 | `config` | 密钥非空/长度/可预测性（单一字符、短周期、升序、占位词） |
 | `model` | 游标解析、size 收敛、分页标志与探测行裁剪 |
 | `middleware` | JWT 缺失/非法/过期三态、RBAC 放行与拒绝、无令牌优先 401 |
-| `service` | 认证全流程 + 时序防护；目录查询；**抢号全部分支**（幂等重放、在途拒绝、号源不足、预热重试、数据库失败回补、唯一键恢复、排班不存在/已关闭）；**对账**（双方向修正、键不存在跳过、并发修改时放弃、分批扫描、单条失败不中断） |
+| `llm` | mock 流式分片不切断多字节字符、ctx 取消即停、onDelta 失败即停、故障注入、四种总结模式、上游未实现时明确报错 |
+| `service` | 认证全流程 + 时序防护；目录查询；**抢号全部分支**（幂等重放、在途拒绝、号源不足、预热重试、数据库失败回补、唯一键恢复、排班不存在/已关闭）；**对账**（双方向修正、键不存在跳过、并发修改时放弃、分批扫描、单条失败不中断）；**预问诊**（空/超长消息、归属与状态校验、上游错误映射、失败不留半截回复、历史累积） |
 
 抢号部分最关键的用例是 **`TestGrab_DatabaseFailureReleasesRedisStock`**：
 它断言"Redis 已扣减但 MySQL 回滚"时必须回补号源。若不回补，

@@ -19,6 +19,30 @@ type Config struct {
 	Redis     Redis     `mapstructure:"redis"`
 	Security  Security  `mapstructure:"security"`
 	Scheduler Scheduler `mapstructure:"scheduler"`
+	LLM       LLM       `mapstructure:"llm"`
+}
+
+// LLM 是 AI 预问诊的上游配置。
+type LLM struct {
+	// Provider 决定使用哪个实现：mock / openai / dashscope / deepseek。
+	// 当前仅 mock 可用（决策 #3：先用 Mock 降级，不依赖外部配额）。
+	Provider string `mapstructure:"provider"`
+	// Timeout 是单次上游调用的超时。
+	Timeout time.Duration `mapstructure:"timeout"`
+	Mock    LLMMock       `mapstructure:"mock"`
+}
+
+// LLMMock 是 mock 客户端的行为开关。
+//
+// 这些开关让 G3 的验收标准（「100% 通过 Schema 校验**或**优雅降级」）
+// 可以被真正验证——没有故障注入就只能测到成功路径。
+type LLMMock struct {
+	// DeltaDelayMS 每段增量之间的延迟，模拟打字机效果。
+	DeltaDelayMS int `mapstructure:"delta_delay_ms"`
+	// SummaryMode 决定结构化总结的返回：valid / invalid_json / invalid_schema / error / timeout。
+	SummaryMode string `mapstructure:"summary_mode"`
+	// StreamErrorAt 为第几段之后注入流式错误（0 表示不注入）。
+	StreamErrorAt int `mapstructure:"stream_error_at"`
 }
 
 // Scheduler 是定时任务配置。用 cron 表达式而非固定常量，
@@ -113,6 +137,11 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("security.bcrypt_cost", 10)
 	v.SetDefault("scheduler.expire_scan", "@every 1m")
 	v.SetDefault("scheduler.stock_reconcile", "@every 5m")
+	v.SetDefault("llm.provider", "mock")
+	v.SetDefault("llm.timeout", "30s")
+	v.SetDefault("llm.mock.delta_delay_ms", 20)
+	v.SetDefault("llm.mock.summary_mode", "valid")
+	v.SetDefault("llm.mock.stream_error_at", 0)
 
 	envBindings := map[string]string{
 		"app.env":        "MEDICORE_APP_ENV",
@@ -134,6 +163,12 @@ func Load(path string) (*Config, error) {
 
 		"scheduler.expire_scan":     "MEDICORE_SCHEDULER_EXPIRE_SCAN",
 		"scheduler.stock_reconcile": "MEDICORE_SCHEDULER_STOCK_RECONCILE",
+
+		"llm.provider":             "MEDICORE_LLM_PROVIDER",
+		"llm.timeout":              "MEDICORE_LLM_TIMEOUT",
+		"llm.mock.delta_delay_ms":  "MEDICORE_LLM_MOCK_DELTA_DELAY_MS",
+		"llm.mock.summary_mode":    "MEDICORE_LLM_MOCK_SUMMARY_MODE",
+		"llm.mock.stream_error_at": "MEDICORE_LLM_MOCK_STREAM_ERROR_AT",
 	}
 	for key, env := range envBindings {
 		if err := v.BindEnv(key, env); err != nil {
