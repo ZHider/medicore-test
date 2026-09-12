@@ -42,7 +42,8 @@
 | M6 | `8eca3e2` | 病历 / 处方 / HIS 模拟同步 |
 | **M6+** | `e3072ab` | **医生工作台补全**：接诊列表 + 预问诊报告对医生开放（spec §2.1 的两处角色缺口） |
 | **审视²** | `6b23e57` | **全量代码审视**：修 1 个 HIGH 级恢复路径缺陷、1 处队列越权、1 处 API 契约倒置；清空死代码与无用泛化；`staticcheck`/`deadcode` 归零 |
-| **补测** | 本次提交 | **针对关键路径补测**（见 §2.8）：直测 repository 层的 Lua/SQL 不变量、限流与令牌撤销、纯逻辑判定；并修掉一个 40% 概率失败的 flaky 用例 |
+| **补测** | `dddd194` | **针对关键路径补测**（见 §2.8）：直测 repository 层的 Lua/SQL 不变量、限流与令牌撤销、纯逻辑判定；并修掉一个 40% 概率失败的 flaky 用例 |
+| **基建** | 本次提交 | **CI / fuzz / benchmark / race**（见 §2.9）：六道 CI 关卡；11 个 fuzz 目标（**找出 2 个真实缺陷**）；`docs/benchmark/` 成型；Docker 里跑通 `-race` |
 
 ### 1.2 关键交付物
 
@@ -433,6 +434,136 @@ assert.Equal(t, 1, q.ackCount())
 > **教训：等待型断言必须等"你即将断言的那个状态"，而不是它的前置状态。**
 > 另外，"本地跑一遍都过了"不足以说明不 flaky——要**在负载下**跑。
 
+### 2.9 工程质量基建：CI / fuzz / benchmark / race
+
+补测解决了"有没有测"，这一轮解决"**测的东西能不能自动跑起来**"。
+
+#### A. CI：六道关卡，以"反馈速度"排序
+
+`.github/workflows/ci.yml`。顺序不是随手排的：**最容易失败、最快的放前面**，
+后面的用 `needs` 串起来，避免在明显坏掉的提交上浪费几分钟。
+
+```
+static（gofmt / vet / staticcheck / deadcode）
+   ├── unit（含 -race）── fuzz
+   ├── integration（MySQL + Redis service）
+   └── vuln
+frontend（nub 安装 → typecheck / lint / build）
+```
+
+三个值得记的细节：
+
+1. **`-race` 在 CI 上是免费的。** ubuntu runner 自带 gcc，cgo 直接可用 ——
+   这恰好补上了本机（Windows，无 C 编译器）做不了的那一环。
+   **本机跑不了不等于项目做不了，只是需要换个环境。**
+2. **`gofmt` 必须以"检查"形式出现**（`gofmt -l` + 非空则失败），不能写成 `gofmt -w`：
+   CI 里改文件毫无意义，要的是"忘了格式化"这件事被拦住。
+3. **`staticcheck` 钉版本**（`@v0.8.1`）。用 `@latest` 会让 CI 因为上游发版而变红，
+   那不是你的代码坏了。
+
+MySQL 的 `--health-cmd` 用的是**真实查询**而不是 `mysqladmin ping`：
+`docker-entrypoint` 初始化时会先起一个临时 server，此时 ping 已经返回成功 ——
+这个坑本地开发时踩过（`AGENTS.md` §5.1），CI 里同样会踩，所以直接按正确做法写。
+
+#### B. Fuzz：11 个目标，**找出 2 个真实缺陷**
+
+对象是**解析不可信输入**的函数 —— 一个 panic 在 HTTP handler 里是 500，
+在后台任务（worker / cron）里就是整个进程没了。
+
+| 包 | 目标 | 守什么 |
+|---|---|---|
+| `secret` | `FuzzDecrypt` / `FuzzEncryptDecryptRoundTrip` | 损坏密文不 panic；往返一致；两次加密密文不同（nonce 随机） |
+| `jwt` | `FuzzParse` / `FuzzIssueParseRoundTrip` | 任意 header 不 panic；**除自己签发的外一律解析失败** |
+| `service` | `FuzzExtractJSON` / `FuzzStripCodeFence` | 声称成功时返回的必须是合法 JSON |
+| `model` | `FuzzParseCursor` / `FuzzNormalizePageSize` | 游标可稳定重放；page size 被夹在上限内 |
+| `audit` | `FuzzTruncate` / `FuzzOptionalString` | 结果可安全写入 utf8mb4 |
+| `mask` | `FuzzMaskNeverLeaksOriginal` | 够长就必须真的屏蔽掉至少一个字符 |
+
+**跑 15 秒就炸出两个真实缺陷**：
+
+1. **`truncate` 没防"输入本身就是非法 UTF-8"。**
+   HTTP 头是字节串，客户端可以发 `User-Agent: \xf0`，Go 的 `net/http` 不做 UTF-8 校验。
+   原实现只保证"不切断多字节字符"，输入本身非法时原样透传，
+   到了 utf8mb4 列上会让**整批 100 条审计一起插入失败**。
+   已改为截断后再做一次 `ToValidUTF8`；顺带修掉 `max <= 0` 时的 slice bounds panic。
+2. **`IDCard` 在长度恰为 10 时完全不脱敏。**
+   `repeat('*', len-10)` 算出 0 个星号，函数原样返回输入。
+   守卫是 `len < 10`，而真正的边界是 `len < 11`（头 6 + 尾 4 之外**至少还要留一位**）。
+   当前不可达（注册强制 `len=18`，`UserProfile` 也不返回身份证），
+   但一个叫"脱敏"却会原样返回的导出函数留着迟早被误用。
+
+**另外 3 次失败是我的断言写错了**，这比缺陷本身更值得记：
+
+| 错误断言 | 反例 | 为什么错 |
+|---|---|---|
+| JWT 的 role 必须字节级往返 | `"\xf5"` | JWT 载荷是 JSON，而 JSON 字符串**无法承载非法 UTF-8**（会被换成 U+FFFD） |
+| 脱敏输出必须 ≠ 输入 | `"0***"` | 函数确实把后 3 位换成了 `*`，只是原文尾部本来就是 `*` |
+| 长度按 rune 守恒 | 18 位数字过 `Phone` | `Phone` 对超长输入会归一到 11 位，本就不守恒 |
+
+**结论：fuzz 报失败时第一件事不是改代码，而是问"这条性质真的必须成立吗"。**
+五个失败里只有两个是代码问题 —— 如果把 fuzz 当"红即改"，就会把三处正确行为改坏。
+
+失败输入已作为回归语料提交到 `<pkg>/testdata/fuzz/<Target>/`，
+下次跑种子语料就会覆盖到。
+
+#### C. Benchmark：把两条"历史结论"变成可复现的护栏
+
+完整结果与复现命令在 `docs/benchmark/README.md`。要点：
+
+- **分页**（20 万行）：游标深浅页 **1.01 / 1.21 ms**（与页码无关），
+  OFFSET 深页 **38.81 ms** → 深页处相差 **38×**。
+  形状与 `database-review.md` 那条"284 倍"一致，量级不同（不同查询与口径），
+  报告里把两个都保留并**写明测量条件**，而不是用新的覆盖旧的。
+- **号源扣减**：单次 419 µs，而裸 `PING` 是 422 µs —— **同量级**。
+  这比数字本身重要：说明 **Lua 开销可忽略，时间全在传输上**，
+  因此"把 Lua 拆成多次调用"是纯损失（往返翻倍 + 破坏原子性）。
+- **热路径**（纯内存，不受环境放大）：审计 `Record` 275 ns、
+  缓冲满时 **125 ns（更快）** —— "背压路径不阻塞"这条设计承诺有了数字；
+  JWT 校验 4.4 µs。
+
+**先测基线再解读数字。** 一开始看到 419 µs 以为是 Lua 慢，
+加一个裸 `PING` 基线才定性：是这个 Windows + Docker Desktop 环境慢
+（同宿主机 Linux 通常几十微秒）。**没有基线的绝对值不可解读。**
+
+#### D. `-race`：本机跑不了，用 Docker 补上
+
+- `go test -race` 要 cgo，本机没有 C 编译器 → **`backend/scripts/race.sh`** 用 Docker 里的
+  Linux 工具链跑。**实测全量 `./internal/...` 约 70 秒，未检出数据竞争。**
+- 三个坑：alpine 镜像不带 gcc 且 `CGO_ENABLED=0`（要先 `apk add gcc musl-dev`）；
+  容器内连不上 proxy.golang.org（必须挂宿主机 `GOMODCACHE` + `GOPROXY=off`）；
+  Git Bash 会改写 `-w /app`（要 `MSYS_NO_PATHCONV=1`）。
+- 第一条最容易误判：满屏 `connection refused` 看着像代码问题，其实是网络。
+
+#### E. 顺手挖出并修掉一个藏了很久的 flaky（夹具生成器撞唯一键）
+
+加完 CI 后连跑集成测试，发现大约每 3~5 次全量运行就失败一次，
+而且**每次报错的用例都不一样**（先是 `TestAppointmentListExpiredPending…`，后是 `TestQueue_…`）。
+单跑那个用例却永远通过。
+
+差点按"那个用例不稳定"去改它的逻辑。真正的判据是看 **Error Trace 指向哪**：
+
+```
+Error 1062: Duplicate entry 'IT57000' for key 'departments.uk_code'
+    Error Trace: .../setup_test.go:409（insertAndLastID）
+```
+
+指向的是**建数据**而不是断言 —— 问题在夹具生成器：
+
+```go
+fmt.Sprintf("IT%d", time.Now().UnixNano()%100000)   // 只有 10 万种取值
+```
+
+全套件要播种上百条，生日悖论下碰撞概率约 5%，已足够让"每跑几次红一次"。
+**它比单个 flaky 用例更坏**：随机出现在不同用例上，
+很容易被逐个"修"一遍却始终修不好。
+
+修法：改用 `atomic.Uint64` 计数器 —— 唯一性从**概率保证**变成**构造性保证**。
+修完连跑 6 次全量，全绿。
+
+> **通用判据：** Error Trace 指向**断言** → 用例逻辑问题；
+> 指向**建数据**（`insertAndLastID` / `seed*`）→ 夹具问题。
+> 后者不要改用例，要改生成器——而且不要用随机数，用计数器。
+
 ---
 
 ## 三、还没做的工作
@@ -449,7 +580,7 @@ assert.Equal(t, 1, q.ackCount())
 | 项 | 说明 |
 |---|---|
 | `docs/ai-vibe-coding/` | spec §10.3 要求 WORKFLOW.md + prompts + **≥5 篇** review。**当前一篇都没有**（G6 验收项） |
-| `docs/benchmark/` + `docs/sql-optimization.md` | spec §12.2 要求压测报告与 EXPLAIN 对比。**数据已有**（284 倍、零超卖），只差成文 |
+| `docs/sql-optimization.md` | spec §12.2。`docs/benchmark/` **已完成**（分页 / 号源 / 热路径 + 复现命令），还差 EXPLAIN 对比文档 |
 | 前端管理看板拉 `/metrics` | spec §8.1 要求 ECharts 渲染系统健康度 |
 | **按角色横切复查其余角色** | 按**医生**角色走完整工作流发现 2 处缺口；随后全量审视又发现**同类**的候诊队列越权（§2.7-B）。**患者与管理员角色仍未系统复查** —— 这个"同类漏洞逐个冒出来"的模式说明该做一次成体系的排查，而不是等它自己暴露 |
 | `golangci-lint` 配置 | 目前只手工跑 `staticcheck` + `deadcode`；纳入常规链路才能防止死代码回流 |
@@ -566,6 +697,8 @@ nub run backend:vet                    # 应为 0
 nub run backend:test                   # 240 个用例通过
 nub run backend:test:integration       # 60 个用例通过
 nub run backend:vuln                   # No vulnerabilities found
+nub run backend:fuzz                   # 11 个 fuzz 目标，各 30s
+nub run backend:bench                  # 纯内存基准
 ```
 
 **当前预期结果**：全部通过，漏洞 0，集成测试 60/60，单元测试 240/240。

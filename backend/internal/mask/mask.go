@@ -12,9 +12,17 @@ func Phone(phone string) string {
 }
 
 // IDCard 脱敏身份证：110101199001011234 -> 110101********1234。
+//
+// 保留头 6 位（行政区划）与尾 4 位，中间全部打码 —— 中间恰好要留**至少一位**。
+// 因此长度不足 11 时必须整体打码：曾经的判断是 len < 10，
+// 于是恰好 10 位时 repeat('*', 0) 产生空串，函数**原样返回输入**，
+// 脱敏完全失效（由 fuzz 测试 FuzzMaskNeverLeaksOriginal 发现）。
+//
+// 当前不可达（注册接口 binding 强制 len=18，且 UserProfile 不返回身份证），
+// 但这是一个"名字叫脱敏、实际会原样返回"的导出函数，留着迟早被误用。
 func IDCard(id string) string {
 	r := []rune(id)
-	if len(r) < 10 {
+	if len(r) < 11 {
 		return repeat('*', len(r))
 	}
 	return string(r[:6]) + repeat('*', len(r)-10) + string(r[len(r)-4:])

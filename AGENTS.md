@@ -146,17 +146,20 @@ MediCore/
 ├── spec.md                  # 规格说明书（SSOT）
 ├── FEASIBILITY.md           # 可行性分析（本机实测结论）
 ├── AGENTS.md                # ← 本文件
+├── .github/workflows/ci.yml # CI：静态检查 / 单元+race / 集成 / fuzz / 漏洞 / 前端
 ├── docs/
 │   ├── schema.sql           # 完整 DDL（11 张表，已实测）
 │   ├── database-review.md   # 数据库设计评审与 22 项验证证据
 │   ├── CODE-REVIEW.md       # 整体审视报告
 │   ├── HANDOVER.md          # 开发历程、错误记录、未完成工作
 │   ├── MODULES.md           # ★ 逐模块结构与决策（改代码前先查这里）
-│   └── ARCHITECTURE.md      # 架构与数据流详解
+│   ├── ARCHITECTURE.md      # 架构与数据流详解
+│   └── benchmark/           # ★ 性能基准报告（含复现命令与环境说明）
 ├── backend/
 │   ├── cmd/                 # server / genlocal / seed / loadtest
 │   ├── configs/
 │   ├── prompts/             # 版本化提示词与 JSON Schema（go:embed）
+│   ├── scripts/             # fuzz.sh（遍历全部 fuzz 目标）/ race.sh（Docker 跑 -race）
 │   ├── internal/
 │   │   ├── app/             # ★ 依赖装配（main 与集成测试共用同一套装配）
 │   │   ├── handler/ service/ repository/ model/    # 分层主干
@@ -222,6 +225,10 @@ worker → XREADGROUP → 抢占 → LLM 总结 → Schema 校验 → 失败重�
 | `nub run backend:vet` / `backend:fmt` | 静态检查 / 格式化 |
 | `nub run backend:vuln` | **漏洞扫描**（需先装 govulncheck） |
 | `staticcheck ./...` / `deadcode -test ./...` | 更深一层的静态检查（需 `go install`，见 `HANDOVER.md` §6） |
+| `nub run backend:fuzz` / `backend:fuzz:long` | 对全部 fuzz 目标各跑 30s / 5m |
+| `nub run backend:bench` | 纯内存基准（审计写入、JWT） |
+| `nub run backend:bench:integration` | 真实 MySQL/Redis 基准（分页、号源），需先起依赖 |
+| `nub run backend:race` | 数据竞争检测（走 Docker，见 §5.10） |
 | `nub run backend:seed` | 灌入演示数据（幂等） |
 | `nub run backend:loadtest` | 并发超卖压测 |
 | `nub run frontend:dev` / `build` / `typecheck` / `lint` | 前端 |
@@ -313,11 +320,27 @@ $env:MEDICORE_MYSQL_PASSWORD='medicore123'; cd backend; go run ./cmd/server
 - fake 至少检查一次实现会透传给下游的关键参数；
 - 拿到一个"看起来对"的期望值时，**回代码确认它是不是真的对**。
 
-### 5.10 机器上没有 C 编译器，`-race` 跑不了
+### 5.10 本机没有 C 编译器 —— 用 Docker 补，或交给 CI
 
-`go test -race` 需要 cgo，而 PATH 里没有 `gcc`（实测：`cgo: C compiler "gcc" not found`）。
-并发相关的改动因此无法自动检测数据竞争，只能靠代码审查 + 单测可重复性。
-需要时再装 [TDM-GCC](https://jmeubank.github.io/tdm-gcc/) 或 mingw-w64。
+`go test -race` 要求 cgo，而 PATH 里没有 `gcc`
+（实测：`cgo: C compiler "gcc" not found`）。两条出路：
+
+```bash
+bash backend/scripts/race.sh                      # 本地：Docker 里的 Linux 工具链
+bash backend/scripts/race.sh ./internal/service/...
+```
+
+**CI 上则是免费的**：ubuntu runner 自带 gcc，`go test -race` 直接可用
+（见 `.github/workflows/ci.yml` 的 unit job）。
+
+写这个脚本时踩到两个坑，都写进脚本注释了：
+
+1. `golang:*-alpine` 镜像**不带 gcc**，且 `CGO_ENABLED=0` —— 要先 `apk add gcc musl-dev`；
+2. 容器内**连不上 proxy.golang.org**，必须把宿主机 `GOMODCACHE` 挂进去并设 `GOPROXY=off`，
+   否则满屏 `dial tcp ... connection refused`，看着像代码问题其实是网络。
+3. Git Bash 会把 `-w /app` 改写成 Windows 路径，需要 `MSYS_NO_PATHCONV=1`。
+
+**实测**：全量 `./internal/...` 约 70 秒，未检出数据竞争。
 
 ### 5.11 等待条件比断言落后一步 = 偶发失败
 
@@ -342,6 +365,46 @@ assert.Equal(t, 1, q.ackCount())
 > 复现手段：单独跑很难触发，要**在 CPU 负载下**跑（起几个后台忙循环）。
 > 这也是为什么"本地跑一遍都过了"不足以说明测试不 flaky。
 
+**第二种 flaky：夹具生成器撞唯一键。** 同一个套件里还藏着另一个，特征不同：
+
+```
+Error 1062: Duplicate entry 'IT57000' for key 'departments.uk_code'
+    Error Trace: .../setup_test.go:409（insertAndLastID）
+```
+
+`seedDoctor` 用 `time.Now().UnixNano()%100000` 拼科室编码 —— 只有 10 万种取值，
+而套件要播种上百条，生日悖论下**每 3~5 次全量运行就撞一次**。
+
+**它的误导性在于：报错的用例每次都不同**，看起来像"那个用例不稳定"，
+于是去改用例逻辑 —— 而问题在夹具生成器上。
+
+> **判据：看 Error Trace 指向哪。**
+> 指向**断言** → 用例逻辑问题；指向**建数据**（`insertAndLastID` / `seed*`）→ 夹具问题。
+> 夹具的唯一性不该依赖概率，应该用单调计数器（构造性保证）。
+
+### 5.12 Fuzz 找到的失败，多半是你的断言错了
+
+第一次跑 fuzz，11 个目标里有 3 个立刻报失败。逐条定性之后是：
+
+| 目标 | 定性 |
+|---|---|
+| `FuzzTruncate` | ✅ **真缺陷**：输入本身就是非法 UTF-8 时原样返回，会毒掉整批审计插入 |
+| `FuzzMaskNeverLeaksOriginal` | ✅ **真缺陷**：`IDCard` 在长度恰为 10 时算出 `repeat('*',0)`，一个字符都没屏蔽 |
+| `FuzzIssueParseRoundTrip` | ❌ **我的断言错**：JWT 的载荷是 JSON，而 JSON 字符串无法承载非法 UTF-8，字节级往返本就不成立 |
+
+后续又迭代了两轮，全都出在断言上：
+"输出必须不等于输入"（`Name("0***")` 反例）、"长度按 rune 守恒"
+（`Phone` 对超长输入会归一到 11 位，本就不守恒）。
+
+**结论：fuzz 报失败时，第一件事不是改代码，而是问"这条性质真的必须成立吗"。**
+定性的方法是回到实现读一遍，而不是看到红就直接改。
+
+顺带两条工程细节：
+- 失败输入会被写进 `<pkg>/testdata/fuzz/<Target>/`，**要提交进仓库**——那是回归语料，
+  下次跑种子就会覆盖到；
+- `-fuzz` 一次只接受**一个**目标，所以用 `backend/scripts/fuzz.sh` 遍历
+  （目标从源码里 grep 出来，不维护硬编码列表）。
+
 ---
 
 ## 6. 修改代码时的检查清单
@@ -359,6 +422,9 @@ assert.Equal(t, 1, q.ackCount())
 - [ ] 关键测试做了反向验证（改坏实现 → 用例确实变红）
 - [ ] 新增的 fake 会检查实现透传给下游的参数（尤其 ctx）
 - [ ] 等待型断言等的是**即将断言的那个状态**，不是它的前置状态（见 §5.11）
+- [ ] 新增解析不可信输入的函数 → 补一个 fuzz 目标（见 §5.12）
+- [ ] 改了并发/共享状态 → 跑一次 `nub run backend:race`
+- [ ] 改了热路径或分页 → 跑一次相关基准，确认没有数量级退化
 - [ ] 改了表结构 → 更新 `docs/schema.sql`（真实来源）+ 备忘 `docs/database-review.md`
 - [ ] 改了行为 → 更新 `backend/README.md`
 
@@ -398,11 +464,12 @@ assert.Equal(t, 1, q.ackCount())
 | **高** | 前端页面 | 仅有脚手架。spec §8 要求登录/挂号/AI 对话/医生工作台/管理看板（后端接口已全部就绪） |
 | **高** | 全栈 compose 编排 | 目前只有依赖服务的 compose，缺 nginx + 前后端镜像 |
 | 中 | AI Vibe Coding 交付物 | spec §10.3 要求 `docs/ai-vibe-coding/` + ≥5 篇 review。**当前一篇都没有**（G6 验收项） |
-| 中 | 压测报告与 SQL 优化文档 | spec §12.2 要求 `docs/benchmark/`、`docs/sql-optimization.md`。**数据已有**，只差成文 |
+| **中** | 压测报告与 SQL 优化文档 | `docs/benchmark/` **已成型**（分页 / 号源 / 热路径，含复现命令）；还差 `docs/sql-optimization.md`（EXPLAIN 对比） |
 | 中 | **按角色横切复查** | 按"医生"角色走完整工作流时发现 2 处规格缺口（见 `docs/MODULES.md` §6.7）。**患者与管理员角色还没这样查过**，大概率还有同类缺口 |
-| 中 | **`staticcheck`/`deadcode` 纳入常规链路** | 本轮手工跑清掉了死代码与 1 个 ST 告警（见 `HANDOVER.md` §6）。没有配置 `golangci-lint`，死代码会重新长回来 |
+| 中 | `golangci-lint` 配置 | `staticcheck` / `deadcode` 已进 CI，但本地没有一键入口；配 `golangci-lint` 可统一 |
+| 中 | CI 首次运行验证 | workflow 已落地并通过 YAML 解析与结构校验，但**从未在 GitHub 上真跑过**（仓库未 push）。首次 push 后需要盯一次 |
 | 低 | `repository` 层覆盖率 | 按包统计 6.4%（假象）；集成测试实际覆盖 **66.8%**。仍为 0% 的主要是缓存命中路径与目录只读查询 |
-| 低 | 装上 C 编译器以便跑 `-race` | 见 §5.10，涉及并发的改动目前无法自动查数据竞争 |
+| 低 | fuzz 目标可再扩 | 目前覆盖 secret/jwt/audit/mask/model/service 的 11 个目标；`llm` 的流式分片解析、`config` 的取值解析尚未纳入 |
 
 **接手前建议先读**：`docs/HANDOVER.md`（开发历程与教训）→ `docs/ARCHITECTURE.md`（架构细节）
 → `docs/CODE-REVIEW.md`（当前质量状态与已知短板）。

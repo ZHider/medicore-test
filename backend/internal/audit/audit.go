@@ -321,18 +321,36 @@ func optionalString(s string) *string {
 	return &s
 }
 
-// truncate 把字符串按**字节**截断到 max，但不会切断多字节字符。
+// truncate 把字符串按**字节**截断到 max，并保证结果是**可安全写入 utf8mb4 列**的。
 //
-// 为什么不能直接 s[:max]：User-Agent 里出现非 ASCII（不少国产 App 会把中文写进 UA）
-// 时，按字节切会切出非法 UTF-8。目标列是 utf8mb4，MySQL 在严格模式下会直接拒绝，
-// 于是**整批 100 条审计记录一起插入失败**——一条畸形 UA 干掉一批审计。
+// 两条约束都来自同一个失败模式：写不进这一列，会让**整批 100 条审计一起失败**。
+//
+//  1. 不能切断多字节字符。UA 里出现非 ASCII 很常见（不少国产 App 会把中文写进 UA），
+//     按字节硬切会切出非法 UTF-8，MySQL 严格模式下直接拒绝。
+//  2. **输入本身可能就是非法 UTF-8**。这条是 fuzz（FuzzTruncate）发现的：
+//     HTTP 头是字节串，客户端可以发 `User-Agent: \xf0`，Go 的 net/http
+//     不做 UTF-8 校验，原样递给我们 —— 一个构造出来的请求就能带走一批审计记录。
+//     所以这里不能假设输入是合法的。
+//
+// max <= 0 时返回空串，而不是让 s[:max] 抛 slice bounds panic（同样由 fuzz 发现）。
 func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
+	if max <= 0 {
+		return ""
 	}
-	// 回退到最近的一个字符起始字节
-	for max > 0 && !utf8.RuneStart(s[max]) {
-		max--
+
+	if len(s) > max {
+		// 回退到最近的一个字符起始字节，避免切断多字节字符
+		cut := max
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut]
 	}
-	return s[:max]
+
+	// 输入可能本来就是非法 UTF-8（见上），必须修掉。
+	// 用空串替换非法字节：结果只会变短，不会突破 max。
+	if !utf8.ValidString(s) {
+		s = strings.ToValidUTF8(s, "")
+	}
+	return s
 }

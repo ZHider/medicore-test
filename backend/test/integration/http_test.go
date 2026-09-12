@@ -453,7 +453,7 @@ func TestPreconsult_SSEChatAndReport(t *testing.T) {
 // 辅助
 // ---------------------------------------------------------------------------
 
-func mustDB(t *testing.T) *gorm.DB {
+func mustDB(t testing.TB) *gorm.DB {
 	t.Helper()
 
 	db, err := gorm.Open(mysql.Open(testDSN()), &gorm.Config{})
@@ -465,7 +465,7 @@ func mustDB(t *testing.T) *gorm.DB {
 //
 // 供 repository 层的直连测试使用：号源、幂等键这些机制的真实语义
 // 只存在于 Lua 脚本里，用 fake 测不出来。连接由 t.Cleanup 自动关闭。
-func mustRedis(t *testing.T) *redis.Client {
+func mustRedis(t testing.TB) *redis.Client {
 	t.Helper()
 
 	rdb := redis.NewClient(&redis.Options{

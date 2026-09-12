@@ -27,9 +27,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
@@ -357,6 +358,24 @@ type doctorFixture struct {
 	Department uint64
 }
 
+// testSeq 为播种数据生成**进程内唯一**的后缀。
+//
+// 这里曾经用 `time.Now().UnixNano() % 100000` 拼科室编码，取值范围只有 10 万个，
+// 而整个套件要播种上百条 —— 生日悖论下大约每几次全量运行就会撞一次
+// （实测约 1/3 ~ 1/5 的运行会失败），表现为随机某个用例在 seedDoctor 里报
+// `Duplicate entry 'ITxxxxx' for key 'departments.uk_code'`。
+//
+// **这类失败最容易被误诊**：报错的用例每次都不同，看起来像"那个用例 flaky"，
+// 于是去改用例本身的逻辑 —— 而真正的问题在夹具生成器上。
+// 判据是：错误来自**建数据**而不是**断言**（Error Trace 指向 insertAndLastID）。
+//
+// 改用单调计数器后，唯一性不再依赖概率，而是构造性保证。
+var testSeq atomic.Uint64
+
+func uniqueSuffix() string {
+	return strconv.FormatUint(testSeq.Add(1), 10)
+}
+
 // seedDoctor 直接写库插入一个科室、医生账号、医生档案与排班。
 //
 // 走 SQL 而不是 API：医生档案的写入路径尚未实现（属于后续里程碑），
@@ -370,14 +389,18 @@ func seedDoctor(t *testing.T, total int) doctorFixture {
 	require.NoError(t, err)
 	defer func() { _ = sqlDB.Close() }()
 
+	seq := uniqueSuffix()
+
+	// departments.code 是 VARCHAR(32)，用序号即可，无需随机
 	deptID := insertAndLastID(t, db,
 		`INSERT INTO departments (code, name, sort_order, status) VALUES (?, ?, ?, 1)`,
-		fmt.Sprintf("IT%d", time.Now().UnixNano()%100000), "集成测试科室", 1)
+		"IT"+seq, "集成测试科室", 1)
 
+	// phone_hash 是 CHAR(64) 且有唯一索引，左补零对齐宽度
 	userID := insertAndLastID(t, db,
 		`INSERT INTO users (role, name, phone_enc, phone_hash, password_hash, status)
 		 VALUES ('doctor', ?, ?, ?, ?, 1)`,
-		"集成测试医生", []byte{0x01}, fmt.Sprintf("%064d", time.Now().UnixNano()%1e18), "x")
+		"集成测试医生", []byte{0x01}, fmt.Sprintf("%064s", seq), "x")
 
 	doctorID := insertAndLastID(t, db,
 		`INSERT INTO doctors (user_id, title, consult_fee, status) VALUES (?, ?, '10.00', 1)`,

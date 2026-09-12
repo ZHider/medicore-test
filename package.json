@@ -11,7 +11,7 @@
     "backend:dev": "cd backend && go run ./cmd/server",
     "backend:build": "cd backend && go build ./...",
     "backend:vet": "cd backend && go vet ./...",
-    "backend:fmt": "cd backend && gofmt -l -w ./cmd ./internal",
+    "backend:fmt": "cd backend && gofmt -l -w ./cmd ./internal ./test",
     "backend:test": "cd backend && go test ./...",
     "backend:test:integration": "cd backend && go test -tags=integration -count=1 ./test/integration/...",
     "backend:cover": "cd backend && go test ./... -coverprofile=cover.out && go tool cover -func=cover.out",
@@ -19,6 +19,12 @@
     "backend:seed": "cd backend && go run ./cmd/seed",
     "backend:genlocal": "cd backend && go run ./cmd/genlocal",
     "backend:loadtest": "cd backend && go run ./cmd/loadtest",
+
+    "backend:fuzz": "bash backend/scripts/fuzz.sh 30s",
+    "backend:fuzz:long": "bash backend/scripts/fuzz.sh 5m",
+    "backend:bench": "cd backend && go test -run '^$' -bench . -benchmem ./internal/...",
+    "backend:bench:integration": "cd backend && go test -tags=integration -run '^$' -bench . -benchmem ./test/integration/...",
+    "backend:race": "bash backend/scripts/race.sh",
 
     "frontend:dev": "nub --cwd frontend run dev",
     "frontend:build": "nub --cwd frontend run build",

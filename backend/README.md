@@ -580,6 +580,55 @@ nub run backend:cover             # 单元测试覆盖率
 # 不会碰开发库的数据（每次运行 DROP 重建以保证用例隔离）。
 ```
 
+### Fuzz（`scripts/fuzz.sh`）
+
+对**解析不可信输入**的函数做模糊测试。`-fuzz` 一次只接受一个目标，
+所以用脚本遍历全部目标（目标从源码里 grep，不维护硬编码列表）：
+
+```bash
+nub run backend:fuzz          # 每个目标 30s
+nub run backend:fuzz:long     # 每个目标 5m
+```
+
+覆盖 11 个目标，分布在 `secret`（损坏密文、加解密往返）、`jwt`（任意 header、伪造）、
+`service`（LLM 输出的 JSON 提取）、`model`（游标、page size）、
+`audit`（UA 截断）、`mask`（脱敏不得原样返回）。
+
+**失败输入会自动写进 `<pkg>/testdata/fuzz/<Target>/`，要提交进仓库** —— 那是回归语料。
+
+> ⚠️ **fuzz 报失败时，先问"这条性质真的必须成立吗"，再决定改不改代码。**
+> 首次跑 11 个目标报了 3 个失败，其中**只有 1 个是代码缺陷**，另外 2 个是我的断言
+> 提了实现做不到的要求（例如要求 JSON 载荷字节级往返非法 UTF-8）。
+> 详见 `docs/HANDOVER.md` §2.9。
+
+### 基准（`docs/benchmark/`）
+
+```bash
+nub run backend:bench                # 纯内存：审计写入、JWT
+nub run backend:bench:integration    # 真实 MySQL/Redis：分页、号源（需先起依赖）
+```
+
+完整结果与解读见 **`docs/benchmark/README.md`**。两条最值得记的结论：
+
+- **游标分页与页码无关**（20 万行：深浅页 1.01 / 1.21 ms），
+  OFFSET 深页 38.81 ms —— 深页处差 **38 倍**；
+- **号源扣减（419 µs）与裸 Redis PING（422 µs）同量级** ⇒ Lua 开销可忽略，
+  时间全在传输上，所以"把 Lua 拆成多次调用"是纯损失。
+
+> 基准的绝对值高度依赖运行环境（本机是 Windows + Docker Desktop，端口转发放大了延迟），
+> **用途是同机对比与回归检测，不是吞吐承诺**。
+
+### 数据竞争检测
+
+```bash
+nub run backend:race                    # 走 Docker 里的 Linux 工具链
+nub run backend:race ./internal/service/...
+```
+
+本机（Windows）没有 C 编译器，`go test -race` 需要 cgo 跑不了；
+脚本用 `golang:1.27.1-alpine` + 现装 gcc + 挂载宿主机模块缓存来补上这一环。
+CI 的 ubuntu runner 自带 gcc，那边是直接跑的。详见 `docs/HANDOVER.md` §2.9-D。
+
 ### 集成测试（`test/integration`）
 
 用 **真实的 `app.Build` 装配** + 真实 MySQL/Redis，通过 `httptest` 发真实 HTTP 请求。
