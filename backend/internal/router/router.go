@@ -8,6 +8,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
+	"github.com/medicore/backend/internal/audit"
 	"github.com/medicore/backend/internal/authctx"
 	"github.com/medicore/backend/internal/config"
 	"github.com/medicore/backend/internal/errcode"
@@ -25,11 +26,13 @@ type Deps struct {
 	Config       *config.Config
 	Logger       *zap.Logger
 	Redis        *redis.Client
+	Audit        audit.Recorder
 	Health       *service.HealthService
 	Auth         *service.AuthService
 	Catalog      *service.CatalogService
 	Appointments *service.AppointmentService
 	Preconsult   *service.PreconsultService
+	AuditLogs    *service.AuditService
 	JWTManager   *jwt.Manager
 }
 
@@ -37,7 +40,7 @@ type Deps struct {
 //
 // 中间件链顺序（spec §3.1，固定不可调换）：
 //
-//	TraceID → Recovery → RequestLog → Metrics → [RateLimit → JWT → RBAC]
+//	TraceID → Recovery → RequestLog → Metrics → Audit → [RateLimit → JWT → RBAC]
 //
 // 方括号内三段按路由挂载而非全局：探针与 /metrics 必须免认证，
 // 否则 Prometheus 抓取会被 401，健康检查也无法在启动早期生效。
@@ -55,6 +58,9 @@ func New(d Deps) *gin.Engine {
 		middleware.Recovery(d.Logger),
 		middleware.RequestLog(d.Logger),
 		middleware.Metrics(),
+		// Audit 在 c.Next() 之后记录，因此能包住后面所有中间件与 handler——
+		// 被 RBAC 拒绝的请求同样会留下记录，而那恰恰是审计最关心的内容之一。
+		middleware.Audit(d.Audit),
 	)
 
 	registerOpsRoutes(r, d)
@@ -107,6 +113,7 @@ func registerSecuredRoutes(r *gin.Engine, d Deps) {
 	registerCatalog(secured, d)
 	registerAppointments(secured, d)
 	registerPreconsult(secured, d)
+	registerAdmin(secured, d)
 }
 
 func registerAuthSecured(g *gin.RouterGroup, d Deps) {
@@ -167,4 +174,13 @@ func registerAppointments(g *gin.RouterGroup, d Deps) {
 	// 候诊队列供医生与管理员查看
 	g.GET("/schedules/:id/queue",
 		middleware.RequireRole(model.RoleDoctor, model.RoleAdmin), h.Queue)
+}
+
+// registerAdmin 挂载仅管理员可用的端点（spec §2.1）。
+func registerAdmin(g *gin.RouterGroup, d Deps) {
+	h := handler.NewAuditHandler(d.AuditLogs)
+
+	admin := g.Group("/admin")
+	admin.Use(middleware.RequireRole(model.RoleAdmin))
+	admin.GET("/audit-logs", h.List)
 }

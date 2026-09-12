@@ -120,3 +120,8 @@ type reportStore interface {
 type summaryQueue interface {
 	Enqueue(ctx context.Context, reportID uint64) error
 }
+
+// auditStore 是审计日志查询能力。
+type auditStore interface {
+	ListByCursor(ctx context.Context, filter repository.AuditFilter, cursor uint64, limit int) ([]model.AuditLogView, error)
+}

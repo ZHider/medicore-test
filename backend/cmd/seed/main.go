@@ -86,6 +86,11 @@ func run() error {
 		return fmt.Errorf("科室表为空：请先确认 docs/schema.sql 的初始数据已执行")
 	}
 
+	admin, err := ensureAdmin(db, cipher, cfg.Security.PhonePepper)
+	if err != nil {
+		return err
+	}
+
 	doctors, err := seedDoctors(db, cipher, cfg.Security.PhonePepper, departments)
 	if err != nil {
 		return err
@@ -106,7 +111,56 @@ func run() error {
 
 	fmt.Printf("完成：科室 %d 个，医生 %d 名，排班 %d 条（新增）\n",
 		len(departments), len(doctors), scheduleCount)
+	fmt.Printf("管理员账号：手机号 %s\n", admin.PhoneHash[:8]+"...")
 	return nil
+}
+
+// 管理员账号的演示参数。
+const (
+	adminPhone       = "13800000000"
+	defaultAdminPass = "Admin@12345"
+	adminPasswordEnv = "MEDICORE_ADMIN_PASSWORD"
+)
+
+// ensureAdmin 创建管理员账号。
+//
+// 密码优先从环境变量读取；缺省时用演示口令并**显式打印警告**：
+// 管理端能查审计日志，用一个众所周知的默认口令是真实风险，不能悄悄带过。
+func ensureAdmin(db *gorm.DB, cipher *secret.Cipher, pepper string) (*model.User, error) {
+	password := os.Getenv(adminPasswordEnv)
+	if password == "" {
+		password = defaultAdminPass
+		fmt.Printf("警告：%s 未设置，管理员使用默认口令（仅限本地演示，切勿用于真实环境）\n",
+			adminPasswordEnv)
+	}
+
+	phoneEnc, err := cipher.Encrypt(adminPhone)
+	if err != nil {
+		return nil, fmt.Errorf("加密管理员手机号: %w", err)
+	}
+	passwordHash, err := secret.HashPassword(password, secret.MinBcryptCost)
+	if err != nil {
+		return nil, fmt.Errorf("生成管理员口令散列: %w", err)
+	}
+
+	admin := model.User{
+		Role:         model.RoleAdmin,
+		Name:         "系统管理员",
+		PhoneEnc:     phoneEnc,
+		PhoneHash:    secret.Digest(adminPhone, pepper),
+		PasswordHash: passwordHash,
+		Status:       model.StatusActive,
+	}
+
+	if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&admin).Error; err != nil {
+		return nil, fmt.Errorf("写入管理员账号: %w", err)
+	}
+	if admin.ID == 0 {
+		if err := db.Where("phone_hash = ?", admin.PhoneHash).First(&admin).Error; err != nil {
+			return nil, fmt.Errorf("查询已存在的管理员账号: %w", err)
+		}
+	}
+	return &admin, nil
 }
 
 // loadDepartments 读取已由 schema.sql 初始化的科室。
