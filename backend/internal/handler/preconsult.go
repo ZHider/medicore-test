@@ -142,3 +142,37 @@ func (h *PreconsultHandler) History(c *gin.Context) {
 	}
 	response.OK(c, gin.H{"items": items})
 }
+
+// Submit 结束对话并触发异步结构化总结。
+//
+// 返回 202 Accepted 而不是 200：总结在后台队列里跑，此刻还没有结果。
+// 客户端应改为轮询 Report 端点。
+func (h *PreconsultHandler) Submit(c *gin.Context) {
+	appointmentID, ok := uintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	result, err := h.svc.Submit(c.Request.Context(), authctx.MustUserID(c), appointmentID)
+	if err != nil {
+		response.FailErr(c, err)
+		return
+	}
+
+	response.Accepted(c, "已提交，正在生成结构化总结", result)
+}
+
+// Report 返回结构化总结报告，供前端轮询状态与展示结果。
+func (h *PreconsultHandler) Report(c *gin.Context) {
+	appointmentID, ok := uintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	report, err := h.svc.Report(c.Request.Context(), authctx.MustUserID(c), appointmentID)
+	if err != nil {
+		response.FailErr(c, err)
+		return
+	}
+	response.OK(c, report)
+}

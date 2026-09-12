@@ -70,6 +70,8 @@ type fakeLLMClient struct {
 	streamErr   error
 	completeOut string
 	completeErr error
+	// completeFunc 用于需要按调用次数返回不同结果的场景（如重试后成功）
+	completeFunc func() (string, error)
 
 	mu      sync.Mutex
 	calls   int
@@ -103,6 +105,9 @@ func (f *fakeLLMClient) ChatStream(
 }
 
 func (f *fakeLLMClient) Complete(context.Context, llm.ChatRequest) (string, error) {
+	if f.completeFunc != nil {
+		return f.completeFunc()
+	}
 	return f.completeOut, f.completeErr
 }
 

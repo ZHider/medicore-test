@@ -26,6 +26,7 @@ import (
 	"github.com/medicore/backend/internal/scheduler"
 	"github.com/medicore/backend/internal/secret"
 	"github.com/medicore/backend/internal/service"
+	"github.com/medicore/backend/internal/worker"
 	"github.com/medicore/backend/prompts"
 )
 
@@ -129,11 +130,29 @@ func run() error {
 		Log:          log,
 	})
 
-	// AI 预问诊：提示词编进二进制，版本号随结果入库以便追溯
+	// AI 预问诊：提示词与输出 Schema 都编进二进制，版本号随结果入库以便追溯
 	systemPrompt, err := prompts.PreconsultSystemPrompt(prompts.PreconsultLatest)
 	if err != nil {
 		return fmt.Errorf("加载预问诊提示词: %w", err)
 	}
+	summaryPrompt, err := prompts.PreconsultSummaryPrompt(prompts.PreconsultLatest)
+	if err != nil {
+		return fmt.Errorf("加载总结提示词: %w", err)
+	}
+	summarySchema, err := prompts.PreconsultSummarySchema(prompts.PreconsultLatest)
+	if err != nil {
+		return fmt.Errorf("加载总结 Schema: %w", err)
+	}
+	// Schema 在启动时编译：写错却跑到线上才发现，代价是整条降级路径静默生效
+	summaryValidator, err := service.NewSummaryValidator(summarySchema)
+	if err != nil {
+		return fmt.Errorf("编译总结 Schema: %w", err)
+	}
+	// 反向自检：确认 Schema 真会拒绝内容，而不是被改成 {}
+	if err := summaryValidator.SelfCheck(); err != nil {
+		return fmt.Errorf("总结 Schema 自检失败: %w", err)
+	}
+
 	llmClient, err := llm.NewClient(cfg.LLM.Provider, llm.MockConfig{
 		DeltaDelay:    time.Duration(cfg.LLM.Mock.DeltaDelayMS) * time.Millisecond,
 		SummaryMode:   llm.SummaryMode(cfg.LLM.Mock.SummaryMode),
@@ -143,12 +162,18 @@ func run() error {
 		return fmt.Errorf("初始化 LLM 客户端: %w", err)
 	}
 
+	summaryQueueRepo := repository.NewSummaryQueueRepo(rdb)
+
 	preconsultSvc := service.NewPreconsultService(service.PreconsultDeps{
 		Appointments:  appointmentRepo,
 		Conversation:  repository.NewConversationRepo(rdb),
+		Reports:       repository.NewAIReportRepo(db),
+		SummaryQueue:  summaryQueueRepo,
 		Client:        llmClient,
+		Validator:     summaryValidator,
 		Log:           log,
 		SystemPrompt:  systemPrompt,
+		SummaryPrompt: summaryPrompt,
 		PromptVersion: prompts.PreconsultLatest,
 		Timeout:       cfg.LLM.Timeout,
 	})
@@ -174,6 +199,14 @@ func run() error {
 		return fmt.Errorf("start scheduler: %w", err)
 	}
 	defer sched.Stop()
+
+	// 预问诊总结 worker：从 Redis Stream 消费任务。
+	// 与请求生命周期解耦，用户提交后关掉页面也不会丢任务。
+	summaryWorker := worker.NewSummaryWorker(summaryQueueRepo, preconsultSvc, log)
+	if err := summaryWorker.Start(); err != nil {
+		return fmt.Errorf("start summary worker: %w", err)
+	}
+	defer summaryWorker.Stop()
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.App.Port),

@@ -129,6 +129,8 @@ MEDICORE_MYSQL_PASSWORD=medicore123 go run ./cmd/server
 |---|---|---|---|
 | POST | `/api/v1/appointments/:id/preconsult/chat` | patient | **SSE 流式对话** |
 | GET | `/api/v1/appointments/:id/preconsult/history` | patient | 取回进行中的对话（刷新页面后恢复上下文） |
+| POST | `/api/v1/appointments/:id/preconsult/submit` | patient | **提交并触发异步总结**，返回 202 |
+| GET | `/api/v1/appointments/:id/preconsult/report` | patient | 查询结构化总结与处理状态 |
 
 ### RBAC
 
@@ -207,6 +209,72 @@ SSE 流式：13 个 delta 事件以约 20ms 间隔逐段到达，末尾 done 事
 故障注入：3 个 delta 后收到 error 事件 code=50201；历史中只留用户消息，无半截回复
 刷新恢复：GET /preconsult/history 返回完整 4 条对话
 ```
+
+## AI 结构化总结设计（M5b）
+
+### 为什么异步（决策 #8）
+
+`POST /preconsult/submit` 立即返回 **202 Accepted**，总结在 Redis Stream 队列里跑：
+
+- 用户提交后很可能**刷新或关闭页面**——刷新不等于取消任务，同步等待会让总结随连接一起消失；
+- LLM 有速率限制，队列天然提供背压与削峰；
+- 总结耗时数秒到数十秒，同步会拖垮接口的 P99。
+
+### 校验与降级（spec §7.2）
+
+```
+调用 Complete → 提取 JSON → Schema 校验
+     ↓ 失败
+   追加纠正指令，重试 1 次
+     ↓ 仍失败
+  降级：structured_json = null，fallback = true，保留原始对话供医生查看
+```
+
+**提取 JSON 做了三级尝试**：整体是 JSON → 剥 Markdown 围栏 → 取首个 `{` 到末个 `}`。
+真实模型经常在 JSON 外面包一层说明文字或 ` ```json ` 代码块，直接反序列化会失败。
+刻意不做更花哨的解析：混乱到这三步都救不回来时，正确做法是降级让医生看原始对话，
+而不是在解析器上继续堆代码。
+
+**降级不是流程失败**：`summarize()` 不返回 error，所有失败都通过 `Fallback + Reason` 表达——
+医生应该看到原始对话，而不是一片空白。
+
+### Schema 自检：防止校验静默失效
+
+`{}` 是**合法**的 JSON Schema，含义是"任何内容都通过"。如果 Schema 文件被误改成空对象
+（或必填字段被删光），编译会成功、每次校验都通过，于是降级路径永不触发、
+垃圾数据被当成结构化结果入库，**而且没有任何报错**。
+
+`SummaryValidator.SelfCheck()` 用空对象做反向验证，把这个陷阱变成启动即失败。
+
+### Stream worker 的至少一次投递
+
+| 机制 | 作用 |
+|---|---|
+| 消费者组 + `XREADGROUP BLOCK` | 有任务立即醒来，不靠轮询空转 |
+| **不确认失败的**消息 | 留在 pending，等待 `XAUTOCLAIM` 重新认领 |
+| 启动时 + 周期性 `ClaimStale` | 认领崩溃 worker 遗留的任务；没有它那些报告会永远停在 processing |
+| 投递次数 ≥ 3 → 死信队列 | 避免一条毒消息无限重投堵住主队列 |
+| 死信时同时标记报告失败 | 否则报告永远停在 processing，对客户端与"正在处理"无法区分 |
+| `MAXLEN ~ 10000` | 防队列无上限增长吃光 Redis 内存 |
+
+重试次数取自 **Redis 的投递计数**（`XPENDING`）而非报告行的 `attempt_count`：
+后者只在成功抢占后递增，"抢占前就失败"（如数据库连接断了）也需要计数，
+否则那类失败会永远重试下去。
+
+### 实测（降级路径，`summary_mode=invalid_json`）
+
+```
+202 响应            : trace_id 已带上
+status              : done, fallback=true
+structured          : null（已降级）
+error_message       : 结构化输出未通过校验（尝试 2 次），已降级为原始对话
+conversation        : 2 轮对话保留，医生端可查看
+DB                  : fallback=1, attempts=2, structured_json IS NULL
+Redis Stream        : XPENDING=0（全部确认）, 死信队列=0
+```
+
+正常路径（`summary_mode=valid`）：提交后 **1 秒内** 完成，返回完整结构化 JSON，
+含 `prompt_version=v1` 与 `llm_model` 便于追溯。
 
 ## 抢号设计（spec §7.1，含两处修正）
 
@@ -302,7 +370,7 @@ Redis 号源键  : 存在=true 值=0
 - [x] **M4** 抢号（幂等 + Lua 原子扣减 + 预热自愈 + 乐观条件 + cron 超时释放 + 签到队列）
 - [x] **M4.5** 号源对账（以 MySQL 为准校准 Redis，比对更新防覆盖）
 - [x] **M5a** AI 预问诊对话（LLM 抽象 + Mock 故障注入 + 提示词版本化 + SSE 流式 + Redis 对话存储）
-- [ ] M5b AI 结构化总结（JSON Schema 校验 + 重试降级 + Redis Stream 异步 worker）
+- [x] **M5b** AI 结构化总结（Schema 校验 + 重试降级 + Redis Stream 异步 worker + 死信）
 - [ ] M6 病历 / 处方 / 审计 / HIS 同步
 
 ## 演示数据
@@ -345,7 +413,7 @@ GET ...&cursor=57
 nub run backend:test      # go test ./...
 ```
 
-121 个用例，service 层不依赖任何外部服务（注入内存实现）：
+152 个用例，service 层不依赖任何外部服务（注入内存实现）：
 
 | 包 | 覆盖内容 |
 |---|---|
@@ -356,6 +424,8 @@ nub run backend:test      # go test ./...
 | `model` | 游标解析、size 收敛、分页标志与探测行裁剪 |
 | `middleware` | JWT 缺失/非法/过期三态、RBAC 放行与拒绝、无令牌优先 401 |
 | `llm` | mock 流式分片不切断多字节字符、ctx 取消即停、onDelta 失败即停、故障注入、四种总结模式、上游未实现时明确报错 |
+| `repository` | 缓存回源不受调用方取消失效、命中后不再回源、脏数据自愈、回源有独立超时上界 |
+| `worker` | 成功即确认、未超限失败不确认（留给 XAUTOCLAIM 重投）、超限转死信并标记报告失败、消息体损坏丢弃、投递次数未知时保守重试、Stop 幂等 |
 | `service` | 认证全流程 + 时序防护；目录查询；**抢号全部分支**（幂等重放、在途拒绝、号源不足、预热重试、数据库失败回补、唯一键恢复、排班不存在/已关闭）；**对账**（双方向修正、键不存在跳过、并发修改时放弃、分批扫描、单条失败不中断）；**预问诊**（空/超长消息、归属与状态校验、上游错误映射、失败不留半截回复、历史累积） |
 
 抢号部分最关键的用例是 **`TestGrab_DatabaseFailureReleasesRedisStock`**：

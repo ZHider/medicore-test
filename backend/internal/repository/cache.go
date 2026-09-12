@@ -77,12 +77,14 @@ func (c *Cache) Del(ctx context.Context, keys ...string) error {
 
 // Load 实现 cache-aside 读模式，并用 singleflight 合并并发回源。
 //
+// loadTimeout 限制回源本身的最长耗时。
+// 回源用的是脱离调用方取消信号的 context，因此必须有独立上界，
+// 否则一次卡住的上游会永久占住这个键。
+const loadTimeout = 5 * time.Second
+
 // 为什么需要 singleflight：热点键失效（或进程刚启动缓存为空）的瞬间，
 // 可能有成百上千个并发请求同时未命中，若各自回源会把压力全部打到 MySQL，
 // 即所谓的「缓存击穿」。合并后同一键同时只有一个请求回源，其余等待并共享结果。
-//
-// 已知取舍：跟随者会共享 leader 的 context，若 leader 的请求被取消，
-// 跟随者也会收到取消错误。对短时回源可接受；若回源很慢可改为独立 context。
 func Load[T any](
 	ctx context.Context,
 	c *Cache,
@@ -106,11 +108,23 @@ func Load[T any](
 			return fresh, nil
 		}
 
-		loaded, err := loader(ctx)
+		// 用**脱离调用方取消信号**的 context 回源。
+		//
+		// singleflight 的跟随者共享 leader 的 context：若 leader 的请求被取消
+		// （用户关掉页面、连接超时），所有健康的跟随者会一起收到
+		// context.Canceled，拿到一个本不该属于它们的错误。
+		//
+		// detach 之后只保留 context 里的值（trace_id 等）并加一个独立超时上界：
+		// 单个请求的取消不再波及他人；即便所有调用方都提前离开，
+		// 这次回源也算顺带把缓存预热好了，并不浪费。
+		loadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), loadTimeout)
+		defer cancel()
+
+		loaded, err := loader(loadCtx)
 		if err != nil {
 			return nil, err
 		}
-		if err := c.SetJSON(ctx, key, loaded, ttl); err != nil {
+		if err := c.SetJSON(loadCtx, key, loaded, ttl); err != nil {
 			c.log.Warn("cache write failed", zap.String("key", key), zap.Error(err))
 		}
 		return loaded, nil

@@ -45,20 +45,28 @@ const maxUserMessageRunes = 1000
 type PreconsultDeps struct {
 	Appointments  appointmentStore
 	Conversation  conversationStore
+	Reports       reportStore
+	SummaryQueue  summaryQueue
 	Client        llm.Client
+	Validator     *SummaryValidator
 	Log           *zap.Logger
 	SystemPrompt  string
+	SummaryPrompt string
 	PromptVersion string
 	Timeout       time.Duration
 }
 
-// PreconsultService 承载 AI 预问诊对话。
+// PreconsultService 承载 AI 预问诊对话与结构化总结。
 type PreconsultService struct {
 	appointments  appointmentStore
 	conversation  conversationStore
+	reports       reportStore
+	summaryQueue  summaryQueue
 	client        llm.Client
+	validator     *SummaryValidator
 	log           *zap.Logger
 	systemPrompt  string
+	summaryPrompt string
 	promptVersion string
 	timeout       time.Duration
 }
@@ -77,9 +85,13 @@ func NewPreconsultService(d PreconsultDeps) *PreconsultService {
 	return &PreconsultService{
 		appointments:  d.Appointments,
 		conversation:  d.Conversation,
+		reports:       d.Reports,
+		summaryQueue:  d.SummaryQueue,
 		client:        d.Client,
+		validator:     d.Validator,
 		log:           log,
 		systemPrompt:  d.SystemPrompt,
+		summaryPrompt: d.SummaryPrompt,
 		promptVersion: d.PromptVersion,
 		timeout:       timeout,
 	}

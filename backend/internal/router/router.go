@@ -137,6 +137,8 @@ func registerPreconsult(g *gin.RouterGroup, d Deps) {
 
 	g.POST("/appointments/:id/preconsult/chat", patient, h.Chat)
 	g.GET("/appointments/:id/preconsult/history", patient, h.History)
+	g.POST("/appointments/:id/preconsult/submit", patient, h.Submit)
+	g.GET("/appointments/:id/preconsult/report", patient, h.Report)
 }
 
 // registerAppointments 挂载抢号相关端点。

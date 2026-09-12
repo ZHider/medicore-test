@@ -105,3 +105,18 @@ type conversationStore interface {
 	List(ctx context.Context, appointmentID uint64) ([]llm.Message, error)
 	Clear(ctx context.Context, appointmentID uint64) error
 }
+
+// reportStore 是 AI 报告的数据访问能力。
+type reportStore interface {
+	CreatePending(ctx context.Context, appointmentID, userID uint64, conversation, llmModel, promptVersion string) (*model.AIReport, bool, error)
+	FindByAppointment(ctx context.Context, appointmentID uint64) (*model.AIReport, error)
+	FindByID(ctx context.Context, id uint64) (*model.AIReport, error)
+	MarkProcessing(ctx context.Context, id uint64) (bool, error)
+	SaveOutcome(ctx context.Context, id uint64, o repository.SummaryOutcomeRow) error
+}
+
+// summaryQueue 是总结任务的投递能力。
+// worker 侧的读取/确认不在这里声明——那是 worker 自己的依赖，与 service 无关。
+type summaryQueue interface {
+	Enqueue(ctx context.Context, reportID uint64) error
+}

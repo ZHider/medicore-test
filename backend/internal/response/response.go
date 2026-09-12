@@ -9,6 +9,7 @@ import (
 	"github.com/medicore/backend/internal/apperr"
 	"github.com/medicore/backend/internal/errcode"
 	"github.com/medicore/backend/internal/traceid"
+	"net/http"
 )
 
 // Body 是所有接口的统一响应体。
@@ -49,6 +50,20 @@ func FailWithData(c *gin.Context, code errcode.Code, data any) {
 	c.JSON(code.HTTPStatus(), Body{
 		Code:    int(code),
 		Message: code.Message(),
+		Data:    data,
+		TraceID: traceID(c),
+	})
+}
+
+// Accepted 返回 202 响应，用于"请求已受理但尚未完成"的异步操作。
+//
+// 单独提供这个 helper 而不是让调用方自己拼 Body：
+// 手写 Body 很容易漏掉 trace_id，而 spec §9.2 要求全链路贯通——
+// 一个空 trace_id 会让这条请求在日志与审计里彻底断链。
+func Accepted(c *gin.Context, message string, data any) {
+	c.JSON(http.StatusAccepted, Body{
+		Code:    int(errcode.Success),
+		Message: message,
 		Data:    data,
 		TraceID: traceID(c),
 	})
