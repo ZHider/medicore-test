@@ -623,11 +623,22 @@ nub run backend:bench:integration    # 真实 MySQL/Redis：分页、号源（�
 ```bash
 nub run backend:race                    # 走 Docker 里的 Linux 工具链
 nub run backend:race ./internal/service/...
+GO_IMAGE=golang:1.27.1-alpine nub run backend:race    # 换镜像
 ```
 
-本机（Windows）没有 C 编译器，`go test -race` 需要 cgo 跑不了；
-脚本用 `golang:1.27.1-alpine` + 现装 gcc + 挂载宿主机模块缓存来补上这一环。
-CI 的 ubuntu runner 自带 gcc，那边是直接跑的。详见 `docs/HANDOVER.md` §2.9-D。
+本机（Windows）没有 C 编译器，`go test -race` 需要 cgo 跑不了；脚本用 Docker 补上。
+CI 的 ubuntu runner 自带 gcc，那边是直接跑的。
+
+**镜像选哪个（实测）**：
+
+| 镜像 | gcc | 准备 | 大小 | `./internal/service/...` |
+|---|---|---|---|---|
+| **`golang:1.27.1`（Debian）← 默认** | 自带 | 无 | 1.31 GB | **29.5 s** |
+| `golang:1.27.1-alpine` | 无 | 每次 `apk add gcc musl-dev` | 381 MB | 64.2 s |
+
+默认用 Debian：开箱即用且快一倍多（alpine 慢在那条无法缓存的 `apk add` 上）。
+alpine 的唯一好处是与部署镜像同一 libc —— 但本脚本跑的是单元测试（依赖全是内存 fake），
+这个差异无关紧要。详见 `docs/HANDOVER.md` §2.9-D。
 
 ### 集成测试（`test/integration`）
 

@@ -527,12 +527,30 @@ MySQL 的 `--health-cmd` 用的是**真实查询**而不是 `mysqladmin ping`：
 
 #### D. `-race`：本机跑不了，用 Docker 补上
 
-- `go test -race` 要 cgo，本机没有 C 编译器 → **`backend/scripts/race.sh`** 用 Docker 里的
-  Linux 工具链跑。**实测全量 `./internal/...` 约 70 秒，未检出数据竞争。**
-- 三个坑：alpine 镜像不带 gcc 且 `CGO_ENABLED=0`（要先 `apk add gcc musl-dev`）；
-  容器内连不上 proxy.golang.org（必须挂宿主机 `GOMODCACHE` + `GOPROXY=off`）；
-  Git Bash 会改写 `-w /app`（要 `MSYS_NO_PATHCONV=1`）。
-- 第一条最容易误判：满屏 `connection refused` 看着像代码问题，其实是网络。
+`go test -race` 要 cgo，本机没有 C 编译器 → **`backend/scripts/race.sh`**
+用 Docker 里的 Linux 工具链跑。**实测全量 `./internal/...` 通过，未检出数据竞争。**
+
+**镜像选择是实测出来的，不是照直觉猜的：**
+
+| 镜像 | gcc | 准备步骤 | 大小 | 同一目标耗时 |
+|---|---|---|---|---|
+| **`golang:1.27.1`（Debian）← 默认** | ✅ 自带 14.2.0，`CGO_ENABLED=1` | **无** | 1.31 GB | **29.5 s** |
+| `golang:1.27.1-alpine` | ❌ 且 `CGO_ENABLED=0` | 每次 `apk add gcc musl-dev` | 381 MB | 64.2 s |
+
+一开始想当然地用了 alpine（因为部署镜像就是 `golang:1.27.1-alpine`），
+结果发现它**不带 gcc**，得先 `apk add`。加上之后能跑，但**慢一倍多** ——
+慢的那一倍全在那条 `apk add` 上：临时容器没有包缓存，每次都重新解析索引 + 下载。
+
+换成 Debian 变体后开箱即用，快一倍多。**"和部署镜像保持一致的 libc" 听起来有道理，
+但那是端到端验证才需要在意的；单元测试的依赖全是内存 fake，musl/glibc 的差异无关紧要。**
+
+脚本仍支持 `GO_IMAGE=golang:1.27.1-alpine` 切回去，并会自动检测、按需补 gcc。
+build cache 按镜像名分卷 —— 不同 libc 的产物缓存键不同，混用只会白等重编译。
+
+另外两个坑（脚本已处理）：
+1. 容器内**连不上 proxy.golang.org**，必须挂宿主机 `GOMODCACHE` + `GOPROXY=off`。
+   这条最容易误判：满屏 `connection refused` 看着像代码问题，其实是网络；
+2. Git Bash 会把 `-w /app` 改写成 Windows 路径，需要 `MSYS_NO_PATHCONV=1`。
 
 #### E. 顺手挖出并修掉一个藏了很久的 flaky（夹具生成器撞唯一键）
 

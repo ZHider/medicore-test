@@ -326,21 +326,35 @@ $env:MEDICORE_MYSQL_PASSWORD='medicore123'; cd backend; go run ./cmd/server
 （实测：`cgo: C compiler "gcc" not found`）。两条出路：
 
 ```bash
-bash backend/scripts/race.sh                      # 本地：Docker 里的 Linux 工具链
+nub run backend:race                              # 本地：Docker 里的 Linux 工具链
 bash backend/scripts/race.sh ./internal/service/...
 ```
 
 **CI 上则是免费的**：ubuntu runner 自带 gcc，`go test -race` 直接可用
 （见 `.github/workflows/ci.yml` 的 unit job）。
 
-写这个脚本时踩到两个坑，都写进脚本注释了：
+**用哪个镜像（都是实测，不是推测）**：
 
-1. `golang:*-alpine` 镜像**不带 gcc**，且 `CGO_ENABLED=0` —— 要先 `apk add gcc musl-dev`；
-2. 容器内**连不上 proxy.golang.org**，必须把宿主机 `GOMODCACHE` 挂进去并设 `GOPROXY=off`，
-   否则满屏 `dial tcp ... connection refused`，看着像代码问题其实是网络。
-3. Git Bash 会把 `-w /app` 改写成 Windows 路径，需要 `MSYS_NO_PATHCONV=1`。
+| 镜像 | gcc | 准备步骤 | 镜像大小 | 跑 `./internal/service/...` |
+|---|---|---|---|---|
+| **`golang:1.27.1`（Debian，默认）** | ✅ 自带 14.2.0 | **无** | 1.31 GB | **29.5 s** |
+| `golang:1.27.1-alpine` | ❌ 且 `CGO_ENABLED=0` | 每次 `apk add gcc musl-dev` | 381 MB | 64.2 s |
 
-**实测**：全量 `./internal/...` 约 70 秒，未检出数据竞争。
+**默认选 Debian**：开箱即用，而且快一倍多 —— 慢的那一倍全花在 alpine 那条
+**无法缓存**的 `apk add` 上（临时容器每次都重新解析索引 + 下载）。
+
+要用 alpine 就设 `GO_IMAGE=golang:1.27.1-alpine`，脚本会自己检测并补 gcc。
+唯一值得用 alpine 的理由是"与部署镜像保持同一 libc"，但本脚本跑的是单元测试
+（依赖全是内存 fake），musl/glibc 的差异在这里无关紧要。**端到端验证另说。**
+
+**另外两个坑（脚本已处理，写在这里以免重踩）**：
+
+1. 容器内**连不上 proxy.golang.org**，必须把宿主机 `GOMODCACHE` 挂进去并设 `GOPROXY=off`，
+   否则满屏 `dial tcp ... connection refused`，看着像代码问题其实是网络；
+2. Git Bash 会把 `-w /app` 改写成 Windows 路径，需要 `MSYS_NO_PATHCONV=1`。
+
+**实测**：Debian 镜像跑全量 `./internal/...`，未检出数据竞争。
+build cache 按镜像名分卷存放 —— 不同 libc 的产物缓存键不同，混用只会白等重编译。
 
 ### 5.11 等待条件比断言落后一步 = 偶发失败
 
