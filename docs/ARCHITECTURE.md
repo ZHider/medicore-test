@@ -11,7 +11,7 @@
 
 ```
                          ┌──────────────────────────┐
-   浏览器 ───────────────►│  Nginx（计划中，未实现）  │
+   浏览器 ──────────────►│  Nginx（计划中，未实现）  │
                          │  / → Vue3 静态资源        │
                          │  /api → backend:8080     │
                          └────────────┬─────────────┘
@@ -39,6 +39,63 @@
 ```
 
 **单体分层而非微服务**（spec §1.3 显式声明）：单人全栈项目，拆分只增加运维复杂度。
+
+### 1.1 后端模块全景（24 个包 / 86 文件 / 9719 行）
+
+分五类。**理解这个分类比记住目录树重要** —— 它决定了"新代码该放哪"。
+
+```
+┌─ 入口与装配（3）─────────────────────────────────────────────┐
+│  cmd/server      只做：加载配置 → Build → Start → 等信号 → Stop │
+│  cmd/genlocal    生成 configs/config.local.yaml（仓库无密钥）    │
+│  cmd/seed        演示数据（幂等）                                │
+│  cmd/loadtest    并发抢号压测（hey/wrk 测不出超卖，见 §3.1）      │
+│  internal/app    ★ 依赖装配，main 与集成测试共用同一套            │
+└──────────────────────────────────────────────────────────────┘
+
+┌─ 分层主干（4）—— 依赖只能向下 ────────────────────────────────┐
+│  handler      692 行  参数绑定/校验、统一响应；禁止 SQL/GORM      │
+│  service     2435 行  业务编排、事务边界、归属校验；禁止 gin      │
+│  repository  2282 行  ★ 唯一允许 GORM 的层；也是唯一放 SQL/Lua 的 │
+│  model        672 行  PO / DTO / 枚举 + 分页与状态判定            │
+└──────────────────────────────────────────────────────────────┘
+
+┌─ HTTP 装配（3）──────────────────────────────────────────────┐
+│  router    190 行  路由分组与中间件挂载（29 条端点）              │
+│  middleware 356 行  TraceID/Recovery/RequestLog/Metrics/        │
+│                    RateLimit/JWT/RBAC/Audit                     │
+│  response   77 行  统一响应信封 {code,message,data,trace_id}     │
+└──────────────────────────────────────────────────────────────┘
+
+┌─ 后台与外部抽象（6）──────────────────────────────────────────┐
+│  scheduler  157 行  cron：超时释放(1m) / 号源对账(5m) / HIS(1h)   │
+│  worker     270 行  Redis Stream 消费者（预问诊总结，含死信）      │
+│  audit      317 行  异步批量审计写入器                            │
+│  llm        248 行  LLM 抽象 + mock（故障注入、流式分片）          │
+│  his         50 行  HIS 对接契约（只放类型，不放接口）             │
+│  mockhis     84 行  上述契约的模拟适配器（相对日期→绝对日期）       │
+└──────────────────────────────────────────────────────────────┘
+
+┌─ 无状态工具包（8）───────────────────────────────────────────┐
+│  config 305  secret 132  errcode 87  jwt 82  apperr 46          │
+│  mask 45  authctx 37  traceid 29  metrics 29  logger 22         │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**平铺在 `internal/` 下，没有 `internal/pkg/`** —— `internal` 本身已阻止外部导入，
+再加一层 `pkg` 是零语义的冗余层级（刻意偏离 spec，见 `HANDOVER.md` §4）。
+
+**判断新代码该放哪**：
+
+| 要写的东西 | 放哪 | 判据 |
+|---|---|---|
+| 新的 HTTP 接口 | `handler` → `service` → `repository` | 三层都要动才是完整的 |
+| 校验"这条数据是不是你的" | **`service`** | 路由 RBAC 回答不了这个问题 |
+| SQL / Lua | **`repository`** | 其它层出现 GORM 就是越界 |
+| 定时任务 | `scheduler` + `service` 的方法 | scheduler 只做调度，不含业务 |
+| 异步消费 | `worker` + 使用方声明的队列接口 | 同 `summaryQueue` 的写法 |
+| 外部系统对接 | 契约放 `internal/<name>`，模拟实现单独成包 | **接口由使用方声明** |
+| 两个以上模块共用的小函数 | `service/access.go` 或对应工具包 | 先问"删掉它会怎样" |
 
 ---
 
@@ -273,6 +330,102 @@ leader 的请求被取消（用户关页面）时，所有健康跟随者会一�
 （有专门的集成测试 `TestSync_DoesNotResetRemaining` 守护这一点。）
 
 ---
+
+## 三点五、端到端数据流（三条角色主线）
+
+上面各节讲的是**单个机制**。这一节把它们串成**完整业务链路** ——
+排查线上问题时通常是从这里往回找，而不是从机制出发。
+
+### A. 患者主线：注册 → 挂号 → AI 预问诊 → 看结果
+
+```
+① 注册          POST /auth/register
+                AES-GCM 加密手机号 ‖ HMAC 摘要落 uk_phone_hash ‖ bcrypt 存口令
+                返回 access_token(2h) + refresh_token(7d, 存 Redis)
+
+② 选科室/医生    GET /departments → /departments/:id/doctors → /doctors/:id/schedules
+                走 repository.Cache（singleflight 合并回源，防击穿）
+
+③ 抢号          POST /appointments
+                ┌ 幂等占用  SETNX idem:grab:{uid}:{key}
+                ├ 预热号源  SETNX stock:sched:{id}        ← 必须 SETNX
+                ├ 原子扣减  Lua → 1/0/-1
+                ├ MySQL 事务 UPDATE remaining-1 WHERE remaining>0 + INSERT
+                └ 记录结果  SET idem = appointmentID
+                （失败：回补 Redis 号源 + 比对删除幂等键）
+
+④ AI 对话        POST /appointments/:id/preconsult/chat   ← SSE
+                逐条 XADD 到 Redis List（conversation:{appointmentID}, TTL 24h）
+                每轮把历史一起喂给 LLM；流式用**回调**不用 channel
+
+⑤ 提交总结       POST /appointments/:id/preconsult/submit → 202 + report_id
+                建报告(pending) → XADD 到 stream:preconsult.summary → 立即返回
+
+   ┌── 异步 ──────────────────────────────────────────────┐
+   │ worker: XREADGROUP → 抢占(MarkProcessing) → LLM 总结   │
+   │         → JSON Schema 校验 → 失败重试 1 次 → 降级      │
+   │         → 写报告(done/failed) → XACK                  │
+   │         重试超限 → 死信队列 + FailReport               │
+   └──────────────────────────────────────────────────────┘
+
+⑥ 查结果         GET /appointments/:id/preconsult/report
+                轮询直到 status ∈ {done, failed}；降级时返回原始对话
+```
+
+**要看的关键点**：③ 的两道闸门（Redis + 唯一索引）、⑤ 的"立即返回 202"、
+以及 worker 失败时报告**不会**停在 `processing`（`FailReport` 必须真的落库）。
+
+### B. 医生主线：看列表 → 看 AI 报告 → 写病历
+
+```
+① 接诊列表       GET /doctor/appointments?date=&status=
+                只含**本人接诊**的预约（管理员走全局分支）
+                LEFT JOIN medical_records 带出 has_record
+
+② 候诊队列       GET /schedules/:id/queue
+                ★ service 层校验排班归属（路由 RBAC 只说明"你是医生"）
+                姓名**刻意不脱敏** —— 医生要能叫号，这是 spec §2.2 的有意例外
+
+③ 看 AI 报告     GET /appointments/:id/preconsult/report
+                ★ authorizeReport 按角色分流：
+                   admin 直通 / patient 看自己 / doctor 看**本人接诊**的
+
+④ 写病历         POST /appointments/:id/record
+                病历 + 处方明细**同一事务**（分开提交会留下"有诊断没用药"）
+                重复书写 → uk_appointment 冲突 → 409
+```
+
+**这一条线上出过两次同类漏洞**（预问诊报告、候诊队列都没有资源层归属校验）——
+根因都是**把路由层 RBAC 当成了资源层授权**。见 `FIXES.md` H2。
+
+### C. 管理员主线：审计查询 + HIS 同步
+
+```
+① 审计查询       GET /admin/audit-logs?user_id=&resource=&action=&from=&to=
+                数据来自 auditWriter 的异步批量写入（每请求 275ns 入队）
+
+② 触发同步       POST /admin/sync/:source → 同步返回结果
+                三阶段：科室 → 医生(依赖科室) → 排班(依赖医生+科室)
+                每阶段 errgroup.SetLimit(5)
+                ★ 排班的 remaining 只跟随 total 的**增量**调整，绝不重置
+                sync_logs.trace_id 记录触发者，可与审计串联
+
+③ 查同步记录     GET /admin/sync-logs
+```
+
+### 贯穿三条线的横切机制
+
+| 机制 | 何时触发 | 落在哪 |
+|---|---|---|
+| **TraceID** | 每个请求入口生成 32 位十六进制 | context → 响应头 → 响应体 → 日志 → `audit_logs` → `sync_logs` |
+| **审计** | 每个请求（探针与 `/metrics` 除外） | 异步批量写 `audit_logs`，缓冲满则丢弃并计数 |
+| **限流** | 登录 5/分钟(按 IP)、抢号 10/分钟(按用户) | Redis 令牌桶 Lua |
+| **超时释放** | cron 每分钟 | `pending` 且 `expire_at < NOW()` → `expired` + 回补号源 |
+| **号源对账** | cron 每 5 分钟 | 以 MySQL 为准校准 Redis，用 `CompareAndSet` |
+| **HIS 同步** | cron 每小时 + 管理员手动 | 三阶段 upsert |
+
+**看懂这张表的用处**：线上出现"号源对不上""数据没写进去""某个请求找不到日志"时，
+先确定是**哪条横切机制**该负责，再去看对应那一节的"为什么这样设计"。
 
 ## 四、数据库设计要点
 

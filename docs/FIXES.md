@@ -28,6 +28,24 @@
 | CI | 6 关卡（static / unit+race / integration / fuzz / vuln / frontend） | workflow 已落地，**尚未在 GitHub 真跑过** |
 | 依赖漏洞 | 6 → **1**（`GO-2026-5932`，上游无修复且代码未调用） | 已接受 |
 
+### 后端完成度 vs 项目完成度（**汇报时必须分开说**）
+
+**后端功能完整**：29 条端点全部实现并实测，M1–M6 全部完成，spec G2/G3/G4 达成。
+
+**项目整体未完成** —— spec §12.2 的交付清单里还有四项，**都不属于后端**：
+
+| 未完成项 | 影响 |
+|---|---|
+| **前端页面**（spec §8：登录/挂号/AI 对话/医生工作台/管理看板） | G1「三角色全流程闭环」只完成了后端一半 —— 患者目前无法真正走完流程 |
+| **全栈 compose 编排**（nginx + 前后端镜像） | G5「一键起全栈」未达成；现有 `deploy/compose.dev.yml` 只起 mysql/redis |
+| `docs/ai-vibe-coding/`（WORKFLOW + prompts + ≥5 reviews） | G6 验收项，目录尚未创建 |
+| `docs/sql-optimization.md` | spec §12.2 要求的 EXPLAIN 对比文档 |
+
+另有一项**部分达成**：`golangci-lint` 零 error —— 没有 `.golangci.yml`，
+但等价的静态检查（`go vet` / `staticcheck` / `deadcode`）已全 0 且进了 CI。
+
+**所以："后端基本完成"成立；"项目完成"不成立。** 详见 `MODULES.md` §0.2。
+
 ### 覆盖率的两个口径（**报数时必须说清**）
 
 ```

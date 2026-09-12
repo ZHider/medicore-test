@@ -5,14 +5,86 @@
 >
 > 即使模块已完成，这些信息仍然重要——**它们回答"为什么是这样写的"，而这正是重构时最容易改错的地方。**
 
-最后更新：工程质量基建（CI / fuzz / benchmark / race）之后（M1–M6 全部完成；提交历史见 `HANDOVER.md` §1）
+最后更新：工程质量基建（CI / fuzz / benchmark / race）之后
 
 > ⚠️ **端点清单以 `backend/internal/router/router.go` 或 gin 启动输出为准。**
 > 本文档曾把管理端点写成 `/api/v1/audit-logs`（少了 `/admin/` 段），照文档调接口会 404。
+> **这个坑后来又踩了一次**：整理本文档 §0 时用 grep 数路由，漏掉了
+> `auth.POST("/login",` 这种"左括号后换行"的写法，数出 25 条；启动 gin 打印的是 **29 条**。
+> 教训不变：**能启动验证的清单，就不要靠文本匹配去数**。
 >
 > ⚠️ **本文档记录的是"当前为什么这样写"。** 审视修掉的缺陷（队列越权、
 > 审计资源名、HIS 契约倒置等）记在 `HANDOVER.md` §2.7 与 `docs/FIXES.md`，
 > 改代码前值得一并看；**写代码前先扫一眼 `docs/PITFALLS.md`**。
+
+---
+
+## 0. 模块全景与完成状态
+
+### 0.1 规模一览（按代码量排序）
+
+| 模块 | 文件 | 行数 | 职责 |
+|---|---|---|---|
+| `service` | 13 | 2435 | 业务编排、事务边界、**资源层归属校验** |
+| `repository` | 17 | 2282 | **唯一允许 GORM 的层**；SQL 与 Lua 都在这里 |
+| `handler` | 9 | 692 | 参数绑定/校验、统一响应 |
+| `model` | 10 | 672 | PO / DTO / 枚举 + 分页与状态判定 |
+| `middleware` | 8 | 356 | TraceID / Recovery / RequestLog / Metrics / RateLimit / JWT / RBAC / Audit |
+| `audit` | 1 | 317 | 异步批量审计写入器 |
+| `config` | 2 | 305 | 配置加载与启动前校验 |
+| `worker` | 1 | 270 | Redis Stream 消费者 |
+| `app` | 1 | 253 | 依赖装配（main 与集成测试共用） |
+| `llm` | 3 | 248 | LLM 抽象 + mock（故障注入） |
+| `router` | 1 | 190 | 路由分组与中间件挂载 |
+| `scheduler` | 1 | 157 | cron 三项任务 |
+| 其余工具包（12 个） | 各 1–3 | 22–132 | `secret` `errcode` `mockhis` `jwt` `response` `his` `apperr` `mask` `authctx` `traceid` `metrics` `logger` |
+
+合计 **86 文件 / 9719 行**（另有 `cmd/` 4 个可执行入口共 740 行、`prompts/` 5 个嵌入文件）。
+
+### 0.2 完成状态（诚实的边界）
+
+**后端功能完整**：29 条端点全部实现并通过实测，M1–M6 全部完成。
+
+但 spec §12.2 的**最终交付清单**里有几项属于"整个项目"而非"后端"，
+它们**尚未完成** —— 说"项目完成了"时需要区分开：
+
+| spec §12.2 / 验收项 | 状态 | 说明 |
+|---|---|---|
+| `docs/benchmark/` 压测报告 | ✅ | 17 项基准 + 复现命令 |
+| 后端分层无越界 | ✅ | `go vet` / `staticcheck` / `deadcode` 三者均 0，已进 CI |
+| **G2** 高并发不超卖 + 高性能查询 | ✅ | `cmd/loadtest` 实测零超卖；分页实测 38× |
+| **G3** AI 结构化 + 优雅降级 + SSE | ✅ | Schema 自检、降级路径、SSE 均已实测 |
+| **G4** 可观测性 + 基础合规 | ✅ | TraceID 贯通、指标齐全、加密存储 + 接口脱敏 |
+| **G1** 三角色全流程闭环 | ⚠️ | 后端接口 100% 就绪；**前端页面未开发** → 患者无法真正走完 |
+| `golangci-lint` 零 error | ⚠️ | 无 `.golangci.yml`；但等价的静态检查已全 0 且在 CI 里跑 |
+| **G5** `docker compose up -d --build` 一键起全栈 | ❌ | 只有 `deploy/compose.dev.yml`（依赖服务）；无前后端镜像、无根 compose |
+| **G6** `docs/ai-vibe-coding/` 留痕 | ❌ | 目录不存在（WORKFLOW + prompts + ≥5 reviews） |
+| `docs/sql-optimization.md` | ❌ | EXPLAIN 对比未成文 |
+| 3–5 分钟演示录屏 | ❌ | 前端页面未开发，无从录起 |
+
+> **一句话**：**后端可视为完成**；项目整体还差 **前端页面开发** 与 **四项交付物**
+> （全栈 compose、`docs/ai-vibe-coding/`、`docs/sql-optimization.md`、演示录屏）。
+> 完整待办见 `HANDOVER.md` §3，风险与未决项见 `FIXES.md` §7。
+
+### 0.3 模块全景与依赖顺序
+
+```
+M1 基础设施 ──── config / logger / middleware / response / errcode / apperr / metrics / traceid
+   │              被所有模块使用
+M2 认证 ──────── secret / jwt / authctx / user
+   │              提供 user_id 与角色
+M3 目录 ──────── pagination / cache / department / doctor / schedule
+   │              提供 schedule 与 doctor_id
+M4 抢号 ──────── stock / idempotency / appointment / scheduler
+   │              提供 appointment 与号源
+M5 AI ────────── llm / prompts / conversation / report / summary_queue / worker
+   │              依赖 appointment 校验归属
+M6 医疗与同步 ── record / sync / audit（含医生工作台补全）
+横切基建 ─────── CI / fuzz / benchmark / race
+```
+
+**三条角色主线**（患者挂号 → 医生接诊 → 管理员运维）的端到端数据流见
+`ARCHITECTURE.md` §三点五。
 
 ---
 
