@@ -230,7 +230,16 @@ id | status    | active_uk
 
 **相差约 284 倍**，且游标分页代价与页码无关（恒定 20 行），OFFSET 随页码线性增长。
 
-→ 直接支撑 spec §5.2「游标分页强制」与 §12.2「`docs/sql-optimization.md`（EXPLAIN 对比）」。
+→ 直接支撑 spec §5.2「游标分页强制」。
+
+> **与 `docs/benchmark/README.md` 那次测量的关系**：那份报告在 `audit_logs`（20 万行）
+> 上测出深页 **38×**（游标 1.01 ms vs OFFSET 38.81 ms）。**量级不同，形状一致** ——
+> 差在查询、表与测量口径（这里是 `EXPLAIN ANALYZE`，那边是端到端基准）。
+> 两个数字都保留并各自写明条件：**不要用其中一个覆盖另一个**，
+> 稳定的结论是"游标恒定、OFFSET 随页码增长"。
+>
+> `docs/sql-optimization.md`（spec §12.2 要求的 EXPLAIN 对比文档）**尚未成文**，
+> 见 `docs/HANDOVER.md` §3.2。
 
 ---
 

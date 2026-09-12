@@ -2,12 +2,18 @@
 
 Go 1.27 + Gin 单体后端。分层架构由 spec §3.2 强制约束。
 
+> **配套文档**：项目总索引见根目录 `AGENTS.md`；
+> 易错点与诊断判据见 `docs/PITFALLS.md`；当前健康指标与缺陷总账见 `docs/FIXES.md`。
+
 ## 目录结构
 
 ```
 backend/
 ├── cmd/server/main.go        # 装配依赖、启动、优雅关闭
 ├── configs/config.yaml       # 配置（敏感项用环境变量覆盖）
+├── scripts/fuzz.sh           # 遍历全部 fuzz 目标（-fuzz 一次只接受一个目标）
+├── scripts/race.sh           # 用 Docker 里的 Linux 工具链跑 -race
+├── test/integration/         # HTTP 集成测试（-tags=integration）+ 基准
 ├── internal/
 │   ├── config/               # 配置加载与启动前校验（Viper）
 │   │
@@ -18,9 +24,13 @@ backend/
 │   ├── middleware/           # TraceID / Recovery / RequestLog / Metrics / JWT / RBAC / RateLimit
 │   ├── router/               # 路由与中间件链组装
 │   │
+│   ├── his/ mockhis/         # HIS 对接契约 / 它的模拟适配器
+│   ├── audit/ worker/ llm/ scheduler/
 │   └── apperr/ authctx/ errcode/ jwt/ logger/
 │       mask/ response/ secret/ traceid/          # 无状态工具包
 ```
+
+> 各包的 `testdata/fuzz/<Target>/` 存放 fuzz 找出的失败输入 —— **那是回归语料，要提交进仓库**。
 
 **依赖方向只能向下**：`handler → service → repository → model`。
 
@@ -460,6 +470,7 @@ nub run backend:vuln      # 需先 go install golang.org/x/vuln/cmd/govulncheck@
 - [x] **M6+** 医生工作台补全：接诊列表 `/doctor/appointments` + 预问诊报告对医生开放（含归属校验）
 - [x] **审视²** 全量代码审视：静态检查归零、清死代码、修队列越权与审计资源名、抽出 `internal/his` 契约
 - [x] **补测** 关键路径补测：repository 直测（号源/幂等/释放闸门/令牌）、限流、纯逻辑判定；修复 1 个 flaky 用例
+- [x] **基建** CI（6 关卡）/ fuzz（11 目标）/ benchmark（17 项）/ `-race`（Docker）；并再修 1 个 flaky（夹具生成器）
 - [ ] M7 前端（Vue 3 + Element Plus）——**按需求暂缓**
 
 ## 病历与同步设计（M6）
@@ -568,7 +579,7 @@ GET ...&cursor=57
 分两层：单元测试验证业务分支，集成测试验证"跑起来才能确认"的东西。
 
 ```bash
-nub run backend:test              # 单元测试，240 个用例，不依赖外部服务
+nub run backend:test              # 单元测试，251 个用例，不依赖外部服务
 
 # 集成测试，60 个用例：需先启动依赖并设置数据库口令（与 deploy/compose.dev.yml 一致）
 nub run deps:up
@@ -685,9 +696,9 @@ HTTP 响应（404/405/400/401/403 信封、SSE 事件流）只能由 handler 产
 
 > 同一个口径陷阱也影响 `repository`：按包统计只有 6.4%，因为集成测试是独立包、
 > 执行不计入该包的 profile。用 `-coverpkg` 单独统计集成测试，
-> **`repository` 实际 66.8%**、`service` 62.4%、`handler` 76.6%。
+> **`repository` 实际 67.5%**、`service` 62.4%、`handler` 76.6%。
 
-### 单元测试（240 个用例）
+### 单元测试（251 个用例）
 
 service 层不依赖任何外部服务（注入内存实现）：
 

@@ -80,7 +80,7 @@ type stockStore interface {
 
 **带来三个好处**：
 
-1. **可测试**：service 单测注入内存 fake，240 个用例秒级跑完，不需要 MySQL/Redis。
+1. **可测试**：service 单测注入内存 fake，251 个用例秒级跑完，不需要 MySQL/Redis。
 2. **耦合可见**：接口就是 service 到底用了哪些能力的清单。
 3. **接口保持最小**：`appointmentJanitor` 只声明 `ListExpiredPending` + `Expire`，
    定时任务不必实现 `appointmentStore` 的全部 7 个方法。
@@ -409,37 +409,50 @@ Zap JSON，字段 `trace_id / method / path / status / latency_ms / client_ip / 
 
 ## 六、测试策略
 
-### 6.1 两层结构
+### 6.1 三种测试 + 三类专项检查
 
-| 层 | 数量 | 运行 | 覆盖 |
+**按依赖划分的三种测试**：
+
+| 层 | 数量 | 运行 | 回答什么问题 |
 |---|---|---|---|
-| 单元 | 240 | `nub run backend:test` | service 核心状态机、工具包、worker 决策、纯逻辑判定 |
-| **repository 直测** | （含在集成内） | `nub run backend:test:integration` | **真实 SQL / Lua 的不变量**：号源、幂等键、超时释放、签到、令牌 |
-| 集成 | 60 | `nub run backend:test:integration` | 全部 29 个端点的行为、RBAC、审计、限流 |
+| 单元 | 251 | `nub run backend:test` | 编排逻辑对不对（分支、顺序、错误映射）。注入内存 fake，秒级跑完 |
+| **repository 直测** | （含在集成内） | `nub run backend:test:integration` | **真实 SQL / Lua 的语义**：号源、幂等键、超时释放、签到、令牌 |
+| 集成 | 60 | `nub run backend:test:integration` | 端到端契约：全部 29 个端点、RBAC、审计、限流、SSE |
 
-**三层而不是两层**：fake 里一行 Go 代码就实现的行为，在 Lua 脚本和带条件的
+**中间那层是最容易被忽略的**：fake 里一行 Go 代码就实现的行为，在 Lua 脚本和带条件的
 UPDATE 里是完全不同的语义。超卖、重复回补、幂等失效这三类问题
 **只存在于 repository 层**，端到端测试能发现"表现不对"但很难指出是哪条语句错了。
 
-**集成测试复用 `app.Build()` 的同一套装配**，因此覆盖真实中间件顺序与依赖注入。
-用独立数据库 `medicore_test` 与 Redis DB 1，由 `deploy/mysql/init-test-db.sql` 创建。
+**三类专项检查（不是测试，但同样进 CI）**：
+
+| 检查 | 命令 | 抓什么 |
+|---|---|---|
+| **Fuzz**（11 目标） | `nub run backend:fuzz` | 解析不可信输入时的 panic / 越界 / 静默失效。**已找出 2 个真实缺陷** |
+| **Benchmark**（17 项） | `nub run backend:bench` `:bench:integration` | 性能回归。守护"游标恒定 vs OFFSET 线性"与"号源扣减 = 一次往返"两条结论 |
+| **`-race`** | `nub run backend:race` | 数据竞争（本机无 C 编译器，走 Docker；CI 上原生可用） |
+
+**集成测试复用 `app.Build()` 的同一套装配**，因此覆盖真实中间件顺序与依赖注入；
+并直接执行 `docs/schema.sql` 建库 —— **DDL 每次都会被真正跑一遍**，
+改了 schema 忘了同步会立刻暴露。
+
+细节：`docs/PITFALLS.md` §6/§7（写测试的坑）、`docs/benchmark/README.md`（性能数据）。
 
 ### 6.2 覆盖率现状（诚实版）
 
 | 包 | 覆盖率 | 评价 |
 |---|---|---|
 | `mask` / `audit` / `mockhis` / `jwt` / `worker` / `llm` / `prompts` / `secret` | 88–100% | ✅ |
-| `service` | 79.5% | ✅ 核心价值所在 |
+| `service` | 79.6% | ✅ 核心价值所在 |
 | `model` | 55.8% | 可接受 |
 | **`repository`** | **6.4%（口径假象）** | ⚠️ 见下方说明 |
 | **`handler`** | **0%（单元）** | ⚠️ 但集成测试覆盖了全部端点行为 |
 
-**整体 34.1%，但这个数字低估了实际保障**：spec §11.1 要求的是"覆盖 service 层核心逻辑"，
-而 service 达到 79.5%。
+**整体 34.2%，但这个数字低估了实际保障**：spec §11.1 要求的是"覆盖 service 层核心逻辑"，
+而 service 达到 79.6%。
 
 > ⚠️ **`repository` 的 6.4% 是按包统计的假象。** 集成测试是独立包，
 > `go test ./...` 的 profile 不合并它的执行。用 `-coverpkg` 单独统计集成测试：
-> **`repository` 实际 66.8%**、`service` 62.4%、`handler` 76.6%。
+> **`repository` 实际 67.5%**、`service` 62.4%、`handler` 76.6%。
 > 报覆盖率时必须说清口径，否则会得出"数据访问层几乎没测"的错误结论。
 
 真实盲区是 repository 中**缓存命中路径**与**目录只读查询**这些非关键分支，

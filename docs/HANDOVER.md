@@ -3,7 +3,7 @@
 > 本文档记录**做过什么、错过什么、还剩什么**。
 > 与 `ARCHITECTURE.md`（讲"系统长什么样"）、`MODULES.md`（讲"每个模块怎么写的"）互补：
 > 这份讲"它是怎么变成现在这样的"。
-> 最后更新：M6 医生工作台补全之后
+> 最后更新：工程质量基建（CI / fuzz / benchmark / race）之后
 
 ---
 
@@ -17,8 +17,22 @@
 | 2 | 本文档 | 做过什么、错过什么、还剩什么 |
 | 3 | `docs/ARCHITECTURE.md` | 系统整体怎么运转 |
 | 4 | `docs/MODULES.md` | **每个模块的结构与决策**（改代码前必查） |
-| 5 | `docs/CODE-REVIEW.md` | 当前质量状态与已知短板 |
-| 6 | `spec.md` | 原始需求（注意：它有 4 处缺陷已被修正） |
+| 5 | `docs/PITFALLS.md` | **易错点总索引 + 诊断判据**（写代码/写测试前扫一眼） |
+| 6 | `docs/FIXES.md` | **当前健康指标 + 缺陷与改进总账**（要汇报或评估现状时看这份） |
+| 7 | `docs/CODE-REVIEW.md` | 两次审视的质量快照与已知短板 |
+| 8 | `docs/benchmark/` | 性能基准结果与复现命令 |
+| 9 | `spec.md` | 原始需求（注意：它有 4 处缺陷已被修正） |
+
+**按目的查**：
+
+| 我要… | 去看 |
+|---|---|
+| 评估项目现在健不健康、要往上汇报 | `docs/FIXES.md` §1 指标表 + §7 风险 |
+| 写代码/写测试前避险 | `docs/PITFALLS.md`（先看 §0 的四张判据表） |
+| 知道某个缺陷当时是怎么发生的 | 本文档 §2（按时间线的原始记录） |
+| 改某个模块 | `docs/MODULES.md` 对应章节 |
+| 看性能数字与怎么复现 | `docs/benchmark/README.md` |
+| 看还剩什么没做 | 本文档 §3 |
 
 ---
 
@@ -43,11 +57,12 @@
 | **M6+** | `e3072ab` | **医生工作台补全**：接诊列表 + 预问诊报告对医生开放（spec §2.1 的两处角色缺口） |
 | **审视²** | `6b23e57` | **全量代码审视**：修 1 个 HIGH 级恢复路径缺陷、1 处队列越权、1 处 API 契约倒置；清空死代码与无用泛化；`staticcheck`/`deadcode` 归零 |
 | **补测** | `dddd194` | **针对关键路径补测**（见 §2.8）：直测 repository 层的 Lua/SQL 不变量、限流与令牌撤销、纯逻辑判定；并修掉一个 40% 概率失败的 flaky 用例 |
-| **基建** | 本次提交 | **CI / fuzz / benchmark / race**（见 §2.9）：六道 CI 关卡；11 个 fuzz 目标（**找出 2 个真实缺陷**）；`docs/benchmark/` 成型；Docker 里跑通 `-race` |
+| **基建** | `ecaa04c` | **CI / fuzz / benchmark / race**（见 §2.9）：六道 CI 关卡；11 个 fuzz 目标（**找出 2 个真实缺陷**）；`docs/benchmark/` 成型；Docker 里跑通 `-race`；并修掉一个夹具生成器引起的 flaky |
+| **收官** | 本次提交 | **文档固化**：新增 `docs/FIXES.md`（缺陷与改进总账 + 健康指标）与 `docs/PITFALLS.md`（易错点总索引 + 诊断判据）；全量同步各文档指标 |
 
 ### 1.2 关键交付物
 
-**后端**（86 文件 / 9695 行生产代码）：
+**后端**（86 文件 / 9719 行生产代码）：
 
 | 模块 | 能力 |
 |---|---|
@@ -61,27 +76,43 @@
 | 审计 | 异步批量写入审计日志，含资源/动作推导 |
 | 运维 | 健康探针、Prometheus 指标（HTTP / 抢号 / 对账 / LLM / 队列 / 审计） |
 
-**测试**：32 文件 / 6676 行（其中集成 7 文件 / 1984 行），**300 个用例全部通过**
+**测试**：42 文件 / 7553 行（其中集成 8 文件 / 2240 行），**311 个用例全部通过**
 
 | 类型 | 数量 | 运行方式 |
 |---|---|---|
 | 单元测试 | 240 | `nub run backend:test`（无需外部依赖） |
 | 集成测试 | 60 | `nub run backend:test:integration`（需 mysql + redis） |
 
-**覆盖率**：整体 **34.1%**（`service` 79.5%、`audit` 94.8%、`mockhis` 92.3%、
+**覆盖率**：整体 **34.2%**（`service` 79.6%、`audit` 96.1%、`mockhis` 92.3%、
 `worker` 90.4%、`jwt` 91.7%、`llm` 89.5%、`prompts` 88.2%、`secret` 87.8%、`mask` 100%、
 `model` 55.8%）
 
 > ⚠️ **`repository` 那 6.4% 是按包统计的假象**：集成测试是独立包，
 > `go test ./...` 的 profile 不合并它的执行。用 `-coverpkg` 单独统计集成测试，
-> **`repository` 实际覆盖 66.8%**、`service` 62.4%、`handler` 76.6%。
+> **`repository` 实际覆盖 67.5%**、`service` 62.4%、`handler` 76.6%。
 > 报告覆盖率时要说清楚用的是哪种口径，否则会得出"数据访问层几乎没测"的错误结论。
 
-**静态检查**：`go vet` 0、`staticcheck` 0、`deadcode` 0（后两者为本次审视新引入）
-**注**：`go test -race` 本机不可用（缺 cgo 的 C 编译器），详见 §2.7-G
+**静态检查**：`go vet` 0、`staticcheck` 0、`deadcode` 0
+**数据竞争**：`-race` 全量通过（本机无 C 编译器，走 `backend/scripts/race.sh` 的 Docker 方案，见 §2.9-D）
+**Fuzz**：11 个目标；**Benchmark**：17 项
 
-**文档**：`spec.md`、`FEASIBILITY.md`、`docs/schema.sql`、`docs/database-review.md`、
-`docs/CODE-REVIEW.md`、`AGENTS.md`、`backend/README.md`
+**文档**：
+
+| 文档 | 回答什么问题 |
+|---|---|
+| `spec.md` | 原始需求（SSOT；4 处缺陷已修正） |
+| `FEASIBILITY.md` | 可行性实测结论 |
+| `AGENTS.md` | 规则、命令、陷阱速查 —— 新 agent 先读这份 |
+| `docs/ARCHITECTURE.md` | 系统整体怎么运转 |
+| `docs/MODULES.md` | 逐模块的结构与决策（改代码前必查） |
+| `docs/PITFALLS.md` | **易错点总索引 + 诊断判据** |
+| `docs/FIXES.md` | **缺陷与改进总账 + 当前健康指标** |
+| `docs/HANDOVER.md` | 本文档：历程、错误记录、未完成工作 |
+| `docs/CODE-REVIEW.md` | 两次审视的质量快照 |
+| `docs/schema.sql` | 完整 DDL（11 张表，集成测试每次执行它） |
+| `docs/database-review.md` | 数据库设计评审与验证证据 |
+| `docs/benchmark/` | 性能基准结果与复现命令 |
+| `backend/README.md` | 后端使用说明 |
 
 **工具命令**：`cmd/genlocal`（密钥生成）、`cmd/seed`（演示数据）、`cmd/loadtest`（并发压测）
 
@@ -391,7 +422,7 @@ service 层**完全没有归属校验** —— 任何医生换个排班 ID 就�
 #### 三层测试的分工在这一轮被明确
 
 ```
-service 单测    →  编排逻辑（注入内存 fake，快，240 个用例秒级跑完）
+service 单测    →  编排逻辑（注入内存 fake，快，251 个用例秒级跑完）
 repository 直测 →  真实 SQL / Lua 的语义（本轮新增，慢但只压在关键不变量上）
 HTTP 集成测试   →  端到端行为、路由、中间件、状态码
 ```
@@ -607,7 +638,7 @@ fmt.Sprintf("IT%d", time.Now().UnixNano()%100000)   // 只有 10 万种取值
 
 | 项 | 说明 |
 |---|---|
-| `repository` 层覆盖率 | 按包统计 6.4%（假象），集成测试实际 66.8%。仍为 0% 的主要是缓存命中路径与目录只读查询 |
+| `repository` 层覆盖率 | 按包统计 6.4%（假象），集成口径 67.5%。仍为 0% 的主要是缓存命中路径与目录只读查询 |
 | `handler` 单元覆盖率 | 0%，但集成测试已覆盖全部 29 个端点的行为 |
 | `config` 覆盖率 33.7% | 密钥校验已覆盖，配置加载分支未覆盖 |
 | **软删除后的"复活"逻辑未实现** | `database-review.md` §4.2 曾把"由 service 复活 `deleted_at = NULL`"写成已完成，实际上代码里没有任何 `Unscoped()`/`deleted_at = NULL` 调用。当前没有任何入口会软删这些表，所以**缺口不可达**；但**加管理端删除功能之前必须先实现复活**，否则 HIS 同步会永久失败（详见该节说明） |
@@ -712,7 +743,7 @@ cd D:\Hider\Code\MediCore
 nub run deps:up
 $env:MEDICORE_MYSQL_PASSWORD='medicore123'
 nub run backend:vet                    # 应为 0
-nub run backend:test                   # 240 个用例通过
+nub run backend:test                   # 251 个用例通过
 nub run backend:test:integration       # 60 个用例通过
 nub run backend:vuln                   # No vulnerabilities found
 nub run backend:fuzz                   # 11 个 fuzz 目标，各 30s

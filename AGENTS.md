@@ -1,7 +1,8 @@
 # AGENTS.md — MediCore 项目交接说明
 
 > **给新 agent 的第一份文件。** 读完这份就能开始工作；需要细节时按文中的指引跳转。
-> 最后更新：全量代码审视之后（提交历史见 `docs/HANDOVER.md` §1；缺陷记录见 §2.7）。
+> 最后更新：工程质量基建（CI / fuzz / benchmark / race）之后。
+> 提交历史见 `docs/HANDOVER.md` §1；缺陷总账见 `docs/FIXES.md`；易错点总索引见 `docs/PITFALLS.md`。
 
 ---
 
@@ -12,8 +13,8 @@
 
 - **规格来源**：`spec.md`（Single Source of Truth，v2.0）
 - **当前状态**：后端 M1–M6 全部完成并通过实测（29 个端点）+ 一次全量代码审视；前端仅有脚手架；未做全栈 compose 编排
-- **规模**：生产 86 文件 / 9695 行；测试 32 文件 / 6676 行；300 个用例全部通过
-- **覆盖率**：整体 34.1%（`service` 79.5% 是核心保障）；`repository` 6.4% 是按包统计的假象，**集成测试实际覆盖 66.8%**
+- **规模**：生产 86 文件 / 9719 行；测试 42 文件 / 7553 行；311 个用例（251 单元 + 60 集成）全部通过
+- **覆盖率**：整体 34.2%（`service` 79.6% 是核心保障）；`repository` 6.4% 是按包统计的假象，**集成口径 67.5%**
 - **静态检查**：`go vet` / `staticcheck` / `deadcode` 三者均为 0 告警
 
 ---
@@ -28,7 +29,7 @@ nub run deps:up                    # 等价于 docker compose -f deploy/compose.
 cd backend && go run ./cmd/genlocal && cd ..
 
 # 3) 跑测试确认环境正常
-nub run backend:test               # 单元测试，240 个用例，不需要外部依赖
+nub run backend:test               # 单元测试，251 个用例，不需要外部依赖
 ```
 
 要跑集成测试还需环境变量：
@@ -73,7 +74,7 @@ grep -rn "gin.Context" backend/internal/service
 `service` 在 `deps.go` 里声明**它所需的最小能力接口**（`userStore` / `stockStore` / `reportStore`…），
 不依赖 `repository` 的具体类型。`repository` 的具体类型隐式满足这些接口。
 
-**好处**：service 单测可注入内存实现，完全不依赖 MySQL/Redis（这是 240 个用例能秒级跑完的原因）。
+**好处**：service 单测可注入内存实现，完全不依赖 MySQL/Redis（这是 251 个用例能秒级跑完的原因）。
 
 **新增 service 依赖时**：在 `deps.go` 加接口 + 加内存 fake，**不要**直接引用 `*repository.XxxRepo`。
 
@@ -154,6 +155,8 @@ MediCore/
 │   ├── HANDOVER.md          # 开发历程、错误记录、未完成工作
 │   ├── MODULES.md           # ★ 逐模块结构与决策（改代码前先查这里）
 │   ├── ARCHITECTURE.md      # 架构与数据流详解
+│   ├── FIXES.md             # ★ 缺陷与改进总账 + 当前健康指标（**向上汇报看这份**）
+│   ├── PITFALLS.md          # ★ 易错点总索引 + 诊断判据（**写代码前扫一眼**）
 │   └── benchmark/           # ★ 性能基准报告（含复现命令与环境说明）
 ├── backend/
 │   ├── cmd/                 # server / genlocal / seed / loadtest
@@ -220,7 +223,7 @@ worker → XREADGROUP → 抢占 → LLM 总结 → Schema 校验 → 失败重�
 |---|---|
 | `nub run deps:up` / `deps:down` / `deps:reset` | 起/停/重置依赖服务（reset 会删数据卷） |
 | `nub run backend:dev` | 启动后端（需 `MEDICORE_MYSQL_PASSWORD=medicore123`） |
-| `nub run backend:test` | 单元测试（240 用例，无需外部依赖） |
+| `nub run backend:test` | 单元测试（251 用例，无需外部依赖） |
 | `nub run backend:test:integration` | 集成测试（60 用例，需依赖服务 + 口令环境变量） |
 | `nub run backend:vet` / `backend:fmt` | 静态检查 / 格式化 |
 | `nub run backend:vuln` | **漏洞扫描**（需先装 govulncheck） |
@@ -241,6 +244,11 @@ $env:MEDICORE_MYSQL_PASSWORD='medicore123'; cd backend; go run ./cmd/server
 ---
 
 ## 5. 已知陷阱（踩过的坑，别再踩）
+
+> 这一节是**最常踩、最危险**的那些，按"什么时候会遇到"排列。
+> **全量分类索引与诊断判据在 `docs/PITFALLS.md`** ——
+> 出问题时先看那里的四张判据表（测试挂了是代码问题还是用例问题？
+> 并发问题属于哪种形态？数据不一致往哪查？这条改动该动哪一层？）。
 
 ### 5.1 Docker MySQL 的"假就绪"
 
@@ -462,7 +470,12 @@ Error 1062: Duplicate entry 'IT57000' for key 'departments.uk_code'
    冷启动全盘失败的 Lua、误删已完成记录的幂等释放、多对多后排班唯一键）。
    发现规格有问题时应指出并修正，而不是照抄。
 
-6. **同类漏洞要成体系排查，别等它一个个冒出来。** 医生工作台补全时修了"报告没做归属校验"，
+6. **主要失效模式是"收尾动作"，不是设计判断。** 跨所有轮次统计：设计都站得住，
+   出错的是"写完不编译、写了不跑、断言恒为真"。**三条能挡住绝大多数**：
+   ① 每写完一个文件立刻编译；② 关键测试做反向验证；③ 等待型断言等最终状态。
+   详见 `docs/PITFALLS.md` §11。
+
+7. **同类漏洞要成体系排查，别等它一个个冒出来。** 医生工作台补全时修了"报告没做归属校验"，
    紧接着全量审视又发现**同类**的"候诊队列没做归属校验"。
    两次都是同一个根因：**路由层 RBAC 被当成了资源层授权**。
    发现一处这类问题时，应该立刻把**所有**返回他人数据的端点扫一遍。
@@ -482,7 +495,7 @@ Error 1062: Duplicate entry 'IT57000' for key 'departments.uk_code'
 | 中 | **按角色横切复查** | 按"医生"角色走完整工作流时发现 2 处规格缺口（见 `docs/MODULES.md` §6.7）。**患者与管理员角色还没这样查过**，大概率还有同类缺口 |
 | 中 | `golangci-lint` 配置 | `staticcheck` / `deadcode` 已进 CI，但本地没有一键入口；配 `golangci-lint` 可统一 |
 | 中 | CI 首次运行验证 | workflow 已落地并通过 YAML 解析与结构校验，但**从未在 GitHub 上真跑过**（仓库未 push）。首次 push 后需要盯一次 |
-| 低 | `repository` 层覆盖率 | 按包统计 6.4%（假象）；集成测试实际覆盖 **66.8%**。仍为 0% 的主要是缓存命中路径与目录只读查询 |
+| 低 | `repository` 层覆盖率 | 按包统计 6.4%（假象）；集成口径 **67.5%**。仍为 0% 的主要是缓存命中路径与目录只读查询 |
 | 低 | fuzz 目标可再扩 | 目前覆盖 secret/jwt/audit/mask/model/service 的 11 个目标；`llm` 的流式分片解析、`config` 的取值解析尚未纳入 |
 
 **接手前建议先读**：`docs/HANDOVER.md`（开发历程与教训）→ `docs/ARCHITECTURE.md`（架构细节）
