@@ -52,6 +52,8 @@ type Scheduler struct {
 	ExpireScan string `mapstructure:"expire_scan"`
 	// StockReconcile 号源对账周期，空串表示用默认值。
 	StockReconcile string `mapstructure:"stock_reconcile"`
+	// HISSync HIS 数据同步周期，空串表示用默认值。
+	HISSync string `mapstructure:"his_sync"`
 }
 
 // Security 是认证与加密相关配置。
@@ -137,6 +139,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("security.bcrypt_cost", 10)
 	v.SetDefault("scheduler.expire_scan", "@every 1m")
 	v.SetDefault("scheduler.stock_reconcile", "@every 5m")
+	v.SetDefault("scheduler.his_sync", "@every 1h")
 	v.SetDefault("llm.provider", "mock")
 	v.SetDefault("llm.timeout", "30s")
 	v.SetDefault("llm.mock.delta_delay_ms", 20)
@@ -163,6 +166,7 @@ func Load(path string) (*Config, error) {
 
 		"scheduler.expire_scan":     "MEDICORE_SCHEDULER_EXPIRE_SCAN",
 		"scheduler.stock_reconcile": "MEDICORE_SCHEDULER_STOCK_RECONCILE",
+		"scheduler.his_sync":        "MEDICORE_SCHEDULER_HIS_SYNC",
 
 		"llm.provider":             "MEDICORE_LLM_PROVIDER",
 		"llm.timeout":              "MEDICORE_LLM_TIMEOUT",

@@ -33,6 +33,8 @@ type Deps struct {
 	Appointments *service.AppointmentService
 	Preconsult   *service.PreconsultService
 	AuditLogs    *service.AuditService
+	Records      *service.RecordService
+	Sync         *service.SyncService
 	JWTManager   *jwt.Manager
 }
 
@@ -114,6 +116,8 @@ func registerSecuredRoutes(r *gin.Engine, d Deps) {
 	registerAppointments(secured, d)
 	registerPreconsult(secured, d)
 	registerAdmin(secured, d)
+	registerRecords(secured, d)
+	registerSync(secured, d)
 }
 
 func registerAuthSecured(g *gin.RouterGroup, d Deps) {
@@ -183,4 +187,30 @@ func registerAdmin(g *gin.RouterGroup, d Deps) {
 	admin := g.Group("/admin")
 	admin.Use(middleware.RequireRole(model.RoleAdmin))
 	admin.GET("/audit-logs", h.List)
+}
+
+// registerRecords 挂载病历与处方端点。
+//
+// 角色限制只放到"医生/患者/管理员均可见"这一层：
+// 更细的归属校验（这份病历是不是你的）必须由 service 层完成，
+// 路由层拿不到资源归属信息。
+func registerRecords(g *gin.RouterGroup, d Deps) {
+	h := handler.NewRecordHandler(d.Records)
+
+	doctor := middleware.RequireRole(model.RoleDoctor)
+	anyRole := middleware.RequireRole(model.RolePatient, model.RoleDoctor, model.RoleAdmin)
+
+	g.POST("/appointments/:id/record", doctor, h.Write)
+	g.GET("/appointments/:id/record", anyRole, h.Get)
+	g.GET("/records", anyRole, h.ListMine)
+}
+
+// registerSync 挂载 HIS 同步端点（仅管理员）。
+func registerSync(g *gin.RouterGroup, d Deps) {
+	h := handler.NewSyncHandler(d.Sync)
+
+	admin := g.Group("/admin")
+	admin.Use(middleware.RequireRole(model.RoleAdmin))
+	admin.POST("/sync/:source", h.Trigger)
+	admin.GET("/sync-logs", h.ListLogs)
 }

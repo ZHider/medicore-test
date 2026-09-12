@@ -99,6 +99,7 @@ func setup() (int, error) {
 	// 关掉定时任务对测试的干扰：让测试自己控制何时触发
 	cfg.Scheduler.ExpireScan = "@every 24h"
 	cfg.Scheduler.StockReconcile = "@every 24h"
+	cfg.Scheduler.HISSync = "@every 24h"
 
 	// 先清空 Redis 测试库，再启动应用：
 	// 反过来的话会把 EnsureGroup 刚创建的消费者组一起删掉，
@@ -348,11 +349,19 @@ func clearRateLimits(t *testing.T) {
 	}
 }
 
-// seedDoctorSchedule 直接写库插入一个医生与排班，返回排班 ID。
+// doctorFixture 是一次性造出的医生，含可用于本地签发令牌的 user_id。
+type doctorFixture struct {
+	UserID     uint64
+	DoctorID   uint64
+	ScheduleID uint64
+	Department uint64
+}
+
+// seedDoctor 直接写库插入一个科室、医生账号、医生档案与排班。
 //
-// 走 SQL 而不是 API：教师的写入路径尚未实现（属于 M6），
-// 但查询与抢号路径需要数据。
-func seedDoctorSchedule(t *testing.T, total int) uint64 {
+// 走 SQL 而不是 API：医生档案的写入路径尚未实现（属于后续里程碑），
+// 但查询、抢号与病历路径需要这些数据。
+func seedDoctor(t *testing.T, total int) doctorFixture {
 	t.Helper()
 
 	db, err := gorm.Open(mysql.Open(testDSN()), &gorm.Config{})
@@ -383,7 +392,15 @@ func seedDoctorSchedule(t *testing.T, total int) uint64 {
 		 VALUES (?, ?, CURDATE(), 'am', ?, ?, 'open')`,
 		doctorID, deptID, total, total)
 
-	return scheduleID
+	return doctorFixture{
+		UserID: userID, DoctorID: doctorID, ScheduleID: scheduleID, Department: deptID,
+	}
+}
+
+// seedDoctorSchedule 只需要排班 ID 的调用方使用。
+func seedDoctorSchedule(t *testing.T, total int) uint64 {
+	t.Helper()
+	return seedDoctor(t, total).ScheduleID
 }
 
 func insertAndLastID(t *testing.T, db *gorm.DB, query string, args ...any) uint64 {

@@ -1,0 +1,54 @@
+{
+  "_comment": "模拟 HIS 数据源。日期用相对今天的天数偏移，保证数据永不过期。",
+  "departments": [
+    { "external_id": "HIS-DEPT-01", "code": "CARD", "name": "心血管内科", "description": "心脏与血管疾病", "sort_order": 100 },
+    { "external_id": "HIS-DEPT-02", "code": "NEUR", "name": "神经内科", "description": "神经系统疾病", "sort_order": 110 },
+    { "external_id": "HIS-DEPT-03", "code": "ORTH", "name": "骨科", "description": "骨骼与关节疾病", "sort_order": 120 },
+    { "external_id": "HIS-DEPT-04", "code": "DERM", "name": "皮肤科", "description": "皮肤相关疾病", "sort_order": 130 },
+    { "external_id": "HIS-DEPT-05", "code": "ENT", "name": "耳鼻喉科", "description": "耳鼻咽喉疾病", "sort_order": 140 }
+  ],
+  "doctors": [
+    {
+      "external_id": "HIS-DOC-01", "name": "陈心远", "phone": "13610000001",
+      "title": "主任医师", "specialty": "冠心病、高血压、心律失常",
+      "department_code": "CARD", "consult_fee": "50.00", "is_primary": true
+    },
+    {
+      "external_id": "HIS-DOC-02", "name": "林静姝", "phone": "13610000002",
+      "title": "副主任医师", "specialty": "心力衰竭、心肌病",
+      "department_code": "CARD", "consult_fee": "30.00", "is_primary": true
+    },
+    {
+      "external_id": "HIS-DOC-03", "name": "周司楠", "phone": "13610000003",
+      "title": "主治医师", "specialty": "脑血管病、头痛",
+      "department_code": "NEUR", "consult_fee": "20.00", "is_primary": true
+    },
+    {
+      "external_id": "HIS-DOC-04", "name": "吴骨正", "phone": "13610000004",
+      "title": "主任医师", "specialty": "关节置换、运动损伤",
+      "department_code": "ORTH", "consult_fee": "50.00", "is_primary": true
+    },
+    {
+      "external_id": "HIS-DOC-05", "name": "郑皮研", "phone": "13610000005",
+      "title": "主治医师", "specialty": "湿疹、银屑病",
+      "department_code": "DERM", "consult_fee": "20.00", "is_primary": true
+    },
+    {
+      "external_id": "HIS-DOC-06", "name": "孙耳聪", "phone": "13610000006",
+      "title": "副主任医师", "specialty": "鼻炎、中耳炎、听力障碍",
+      "department_code": "ENT", "consult_fee": "30.00", "is_primary": true
+    }
+  ],
+  "schedules": [
+    { "external_id": "HIS-SCH-0001", "doctor_external_id": "HIS-DOC-01", "department_code": "CARD", "date_offset_days": 0, "time_slot": "am", "total": 30 },
+    { "external_id": "HIS-SCH-0002", "doctor_external_id": "HIS-DOC-01", "department_code": "CARD", "date_offset_days": 0, "time_slot": "pm", "total": 20 },
+    { "external_id": "HIS-SCH-0003", "doctor_external_id": "HIS-DOC-01", "department_code": "CARD", "date_offset_days": 1, "time_slot": "am", "total": 30 },
+    { "external_id": "HIS-SCH-0004", "doctor_external_id": "HIS-DOC-02", "department_code": "CARD", "date_offset_days": 0, "time_slot": "am", "total": 25 },
+    { "external_id": "HIS-SCH-0005", "doctor_external_id": "HIS-DOC-02", "department_code": "CARD", "date_offset_days": 2, "time_slot": "pm", "total": 25 },
+    { "external_id": "HIS-SCH-0006", "doctor_external_id": "HIS-DOC-03", "department_code": "NEUR", "date_offset_days": 0, "time_slot": "am", "total": 20 },
+    { "external_id": "HIS-SCH-0007", "doctor_external_id": "HIS-DOC-03", "department_code": "NEUR", "date_offset_days": 1, "time_slot": "pm", "total": 20 },
+    { "external_id": "HIS-SCH-0008", "doctor_external_id": "HIS-DOC-04", "department_code": "ORTH", "date_offset_days": 0, "time_slot": "am", "total": 15 },
+    { "external_id": "HIS-SCH-0009", "doctor_external_id": "HIS-DOC-05", "department_code": "DERM", "date_offset_days": 0, "time_slot": "pm", "total": 30 },
+    { "external_id": "HIS-SCH-0010", "doctor_external_id": "HIS-DOC-06", "department_code": "ENT", "date_offset_days": 1, "time_slot": "am", "total": 18 }
+  ]
+}

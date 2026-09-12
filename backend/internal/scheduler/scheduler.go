@@ -9,6 +9,7 @@ import (
 	"github.com/robfig/cron/v3"
 	"go.uber.org/zap"
 
+	"github.com/medicore/backend/internal/model"
 	"github.com/medicore/backend/internal/service"
 )
 
@@ -16,6 +17,7 @@ import (
 const (
 	defaultExpireScanSpec     = "@every 1m"
 	defaultStockReconcileSpec = "@every 5m"
+	defaultHISSyncSpec        = "@every 1h"
 )
 
 // jobTimeout 限制单次任务的最长执行时间，避免上一轮未结束、下一轮又启动。
@@ -27,6 +29,8 @@ type Options struct {
 	ExpireScan string
 	// StockReconcile 号源对账周期，空串用默认值。
 	StockReconcile string
+	// HISSync HIS 数据同步周期。
+	HISSync string
 }
 
 // Scheduler 封装 cron 实例。
@@ -34,12 +38,14 @@ type Scheduler struct {
 	cron           *cron.Cron
 	log            *zap.Logger
 	appts          *service.AppointmentService
+	sync           *service.SyncService
 	expireScanSpec string
 	reconcileSpec  string
+	hisSyncSpec    string
 }
 
 // New 构造 Scheduler 并注册任务（尚未启动）。
-func New(log *zap.Logger, appts *service.AppointmentService, opts Options) *Scheduler {
+func New(log *zap.Logger, appts *service.AppointmentService, syncSvc *service.SyncService, opts Options) *Scheduler {
 	if log == nil {
 		log = zap.NewNop()
 	}
@@ -48,6 +54,9 @@ func New(log *zap.Logger, appts *service.AppointmentService, opts Options) *Sche
 	}
 	if opts.StockReconcile == "" {
 		opts.StockReconcile = defaultStockReconcileSpec
+	}
+	if opts.HISSync == "" {
+		opts.HISSync = defaultHISSyncSpec
 	}
 
 	return &Scheduler{
@@ -58,6 +67,8 @@ func New(log *zap.Logger, appts *service.AppointmentService, opts Options) *Sche
 		appts:          appts,
 		expireScanSpec: opts.ExpireScan,
 		reconcileSpec:  opts.StockReconcile,
+		hisSyncSpec:    opts.HISSync,
+		sync:           syncSvc,
 	}
 }
 
@@ -69,11 +80,15 @@ func (s *Scheduler) Start() error {
 	if _, err := s.cron.AddFunc(s.reconcileSpec, s.reconcileStock); err != nil {
 		return fmt.Errorf("注册对账任务（周期 %q）: %w", s.reconcileSpec, err)
 	}
+	if _, err := s.cron.AddFunc(s.hisSyncSpec, s.syncHIS); err != nil {
+		return fmt.Errorf("注册 HIS 同步任务（周期 %q）: %w", s.hisSyncSpec, err)
+	}
 
 	s.cron.Start()
 	s.log.Info("scheduler started",
 		zap.String("expire_scan", s.expireScanSpec),
-		zap.String("stock_reconcile", s.reconcileSpec))
+		zap.String("stock_reconcile", s.reconcileSpec),
+		zap.String("his_sync", s.hisSyncSpec))
 	return nil
 }
 
@@ -151,4 +166,15 @@ func toZapFields(keysAndValues []any) []zap.Field {
 		fields = append(fields, zap.Any(key, keysAndValues[i+1]))
 	}
 	return fields
+}
+
+// syncHIS 周期性从 HIS 同步基础数据。
+func (s *Scheduler) syncHIS() {
+	ctx, cancel := context.WithTimeout(context.Background(), jobTimeout)
+	defer cancel()
+
+	if _, err := s.sync.Sync(ctx, model.SyncTriggerCron); err != nil {
+		// 同步失败不是致命问题：下次周期会重试，且 sync_logs 里留下了记录
+		s.log.Warn("scheduled HIS sync failed", zap.Error(err))
+	}
 }

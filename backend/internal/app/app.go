@@ -6,6 +6,7 @@
 package app
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/medicore/backend/internal/config"
 	"github.com/medicore/backend/internal/jwt"
 	"github.com/medicore/backend/internal/llm"
+	"github.com/medicore/backend/internal/mockhis"
 	"github.com/medicore/backend/internal/repository"
 	"github.com/medicore/backend/internal/router"
 	"github.com/medicore/backend/internal/scheduler"
@@ -29,6 +31,16 @@ import (
 	"github.com/medicore/backend/internal/worker"
 	"github.com/medicore/backend/prompts"
 )
+
+// hisSource 是模拟 HIS 数据源。
+//
+// 单独定义而不是直接用函数：真实 HIS 接入时只需替换这个实现，
+// service 层的同步编排逻辑一行不用改。
+type hisSource struct{}
+
+func (hisSource) Load(context.Context) (*mockhis.Dataset, error) {
+	return mockhis.Load()
+}
 
 // App 持有已装配的运行单元。
 type App struct {
@@ -185,6 +197,24 @@ func Build(cfg *config.Config, log *zap.Logger) (*App, error) {
 		Logs: repository.NewAuditRepo(db),
 	})
 
+	// 病历与处方
+	recordSvc := service.NewRecordService(service.RecordDeps{
+		Records:      repository.NewMedicalRecordRepo(db),
+		Appointments: appointmentRepo,
+		Log:          log,
+	})
+
+	// HIS 同步
+	syncLogRepo := repository.NewSyncLogRepo(db)
+	syncSvc := service.NewSyncService(service.SyncDeps{
+		Source:      hisSource{},
+		Sync:        repository.NewSyncRepo(db),
+		Logs:        syncLogRepo,
+		Cipher:      cipher,
+		PhonePepper: cfg.Security.PhonePepper,
+		Log:         log,
+	})
+
 	// 审计写入器：异步批量落库，请求路径只做一次非阻塞入队
 	auditWriter := audit.NewWriter(repository.NewAuditRepo(db), log)
 
@@ -199,12 +229,15 @@ func Build(cfg *config.Config, log *zap.Logger) (*App, error) {
 		Appointments: appointmentSvc,
 		Preconsult:   preconsultSvc,
 		AuditLogs:    auditSvc,
+		Records:      recordSvc,
+		Sync:         syncSvc,
 		JWTManager:   jwtManager,
 	})
 
-	sched := scheduler.New(log, appointmentSvc, scheduler.Options{
+	sched := scheduler.New(log, appointmentSvc, syncSvc, scheduler.Options{
 		ExpireScan:     cfg.Scheduler.ExpireScan,
 		StockReconcile: cfg.Scheduler.StockReconcile,
+		HISSync:        cfg.Scheduler.HISSync,
 	})
 	summaryWorker := worker.NewSummaryWorker(summaryQueueRepo, preconsultSvc, log)
 

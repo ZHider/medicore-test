@@ -171,7 +171,7 @@ func TestAudit_DeniedRequestIsRecorded(t *testing.T) {
 
 func TestCatalog_DepartmentsDoctorsSchedules(t *testing.T) {
 	token, _ := registerPatient(t)
-	scheduleID := seedDoctorSchedule(t, 8)
+	seedDoctorSchedule(t, 8)
 
 	t.Run("科室列表", func(t *testing.T) {
 		_, env := call(t, request{method: "GET", path: "/api/v1/departments", token: token})
@@ -211,8 +211,6 @@ func TestCatalog_DepartmentsDoctorsSchedules(t *testing.T) {
 		})
 		assert.Equal(t, 40001, env.Code)
 	})
-
-	_ = scheduleID
 }
 
 func TestAppointment_GrabIdempotencyAndCancel(t *testing.T) {

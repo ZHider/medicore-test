@@ -125,3 +125,37 @@ type summaryQueue interface {
 type auditStore interface {
 	ListByCursor(ctx context.Context, filter repository.AuditFilter, cursor uint64, limit int) ([]model.AuditLogView, error)
 }
+
+// appointmentReader 是预约读取能力。
+// 与 appointmentStore 分开：病历模块只需要"按 ID 读一条"，不需要全部 7 个方法。
+type appointmentReader interface {
+	FindByID(ctx context.Context, id uint64) (*model.Appointment, error)
+}
+
+// recordStore 是病历与处方的数据访问能力。
+type recordStore interface {
+	CreateWithPrescriptions(ctx context.Context, record *model.MedicalRecord, items []model.PrescriptionItem) error
+	FindViewByAppointment(ctx context.Context, appointmentID uint64) (*model.MedicalRecordView, error)
+	ListPrescriptions(ctx context.Context, recordID uint64) ([]model.PrescriptionItemView, error)
+	ListByPatientCursor(ctx context.Context, patientID, cursor uint64, limit int) ([]model.MedicalRecordListItem, error)
+	ListByDoctorCursor(ctx context.Context, doctorID, cursor uint64, limit int) ([]model.MedicalRecordListItem, error)
+	ListAllCursor(ctx context.Context, cursor uint64, limit int) ([]model.MedicalRecordListItem, error)
+	FindDoctorIDByUserID(ctx context.Context, userID uint64) (uint64, error)
+}
+
+// syncStore 是 HIS 同步的写入能力。
+type syncStore interface {
+	UpsertDepartment(ctx context.Context, dept model.Department) error
+	FindDepartmentIDByCode(ctx context.Context, code string) (uint64, error)
+	UpsertDoctor(ctx context.Context, in repository.SyncDoctorInput, departmentID uint64, isPrimary bool) (uint64, error)
+	FindDoctorIDByExternalID(ctx context.Context, externalID string) (uint64, error)
+	UpsertSchedule(ctx context.Context, in model.Schedule, externalID string) (bool, error)
+}
+
+// syncLogStore 是同步记录能力。
+type syncLogStore interface {
+	Start(ctx context.Context, source, trigger string) (uint64, error)
+	Finish(ctx context.Context, id uint64, result repository.SyncResult) error
+	FindViewByID(ctx context.Context, id uint64) (*model.SyncLogView, error)
+	ListByCursor(ctx context.Context, source string, cursor uint64, limit int) ([]model.SyncLogView, error)
+}

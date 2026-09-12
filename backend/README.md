@@ -132,6 +132,24 @@ MEDICORE_MYSQL_PASSWORD=medicore123 go run ./cmd/server
 | POST | `/api/v1/appointments/:id/preconsult/submit` | patient | **提交并触发异步总结**，返回 202 |
 | GET | `/api/v1/appointments/:id/preconsult/report` | patient | 查询结构化总结与处理状态 |
 
+### 病历与处方（M6）
+
+| Method | Path | 角色 | 说明 |
+|---|---|---|---|
+| POST | `/api/v1/appointments/:id/record` | doctor | 书写病历与处方（**同一次事务**），仅接诊医生本人 |
+| GET | `/api/v1/appointments/:id/record` | 全部 | 查看某次就诊的病历（患者本人 / 接诊医生 / 管理员） |
+| GET | `/api/v1/records?cursor=&size=` | 全部 | 病历列表（患者看自己、医生看自己接诊、管理员看全部） |
+
+### HIS 同步（M6）
+
+| Method | Path | 角色 | 说明 |
+|---|---|---|---|
+| POST | `/api/v1/admin/sync/:source` | admin | 手动触发一次同步（当前仅 `mockhis`） |
+| GET | `/api/v1/admin/sync-logs?source=&cursor=&size=` | admin | 同步历史，游标分页 |
+
+数据源通过 `mockhis.Source` 抽象，`SyncService` 只依赖该接口，
+接真实 HIS 时替换实现即可，同步编排逻辑不需要改。
+
 ### RBAC
 
 `middleware.RequireRole(model.RoleAdmin, ...)` 挂在 JWT 之后使用。
@@ -407,7 +425,49 @@ nub run backend:vuln      # 需先 go install golang.org/x/vuln/cmd/govulncheck@
 - [x] **M4.5** 号源对账（以 MySQL 为准校准 Redis，比对更新防覆盖）
 - [x] **M5a** AI 预问诊对话（LLM 抽象 + Mock 故障注入 + 提示词版本化 + SSE 流式 + Redis 对话存储）
 - [x] **M5b** AI 结构化总结（Schema 校验 + 重试降级 + Redis Stream 异步 worker + 死信）
-- [ ] M6 病历 / 处方 / 审计 / HIS 同步
+- [x] **M6** 病历 / 处方 / 审计日志查询 / HIS 同步（模拟数据源 + 增量同步 + 同步日志）
+- [ ] M7 前端（Vue 3 + Element Plus）——**按需求暂缓**
+
+## 病历与同步设计（M6）
+
+### 双层校验：路由层只回答"是不是医生"
+
+`POST /appointments/:id/record` 上挂 `RequireRole(doctor)`，但这只说明"你是医生"，
+不说明"这次就诊归你"。**归属校验在 service 层**：
+
+```go
+if appt.DoctorID != doctorID {   // doctorID 由 users.id 解析出 doctors.id
+    return nil, apperr.New(errcode.ErrNotOwner, ...)
+}
+```
+
+少了这一条，任何医生改一下 URL 里的 ID 就能给别人的患者下诊断。
+注意比较的是 `doctors.id` 而非 `users.id`，直接拿 `users.id` 比较会**永远不相等**
+（`RecordService.doctorIDOf` 专门做这个转换）。
+
+### 同步绝不重置 `remaining`
+
+这是整个 M6 最容易写错、后果最严重的地方：
+
+```
+remaining' = max(0, remaining + (total_new - total_old))
+```
+
+若写成 `remaining = total`，HIS 每次同步都会把已被预约的号源"还回去"，
+**每一次同步都是一次超卖**。集成测试 `TestSync_DoesNotResetRemaining`
+专门锁死这条不变量，并且做过反向验证（改成 `remaining = in.Total` 后用例确实失败：
+`expected: 29, actual: 30`）。
+
+### 演示数据用相对日期
+
+`dataset.json` 里的 `date_offset_days` 是**相对今天的偏移**，不是绝对日期。
+写死绝对日期的演示数据过几天就全部过期，表现为"莫名其妙抢不到号"。
+
+### 同步账号的口令
+
+同步来的医生账号由服务端生成随机口令（bcrypt，cost 不低于 `secret.MinBcryptCost`）。
+集成测试直接校验散列本身：算法正确、强度达标、**逐账号互不相同**
+（共用同一个散列等同于默认口令，是最典型的入侵入口）。
 
 ## 演示数据
 
@@ -448,9 +508,9 @@ GET ...&cursor=57
 分两层：单元测试验证业务分支，集成测试验证"跑起来才能确认"的东西。
 
 ```bash
-nub run backend:test              # 单元测试，172 个用例，不依赖外部服务
+nub run backend:test              # 单元测试，200 个用例，不依赖外部服务
 
-# 集成测试，31 个用例：需先启动依赖并设置数据库口令（与 deploy/compose.dev.yml 一致）
+# 集成测试，20 个用例：需先启动依赖并设置数据库口令（与 deploy/compose.dev.yml 一致）
 nub run deps:up
 MEDICORE_MYSQL_PASSWORD=medicore123 nub run backend:test:integration
 
@@ -478,13 +538,15 @@ nub run backend:cover             # 单元测试覆盖率
 | 目录 | 科室不存在返回 404 而非空列表、游标非法返回 400 |
 | 预约 | 幂等重放返回同一预约、`uk_active` 拒绝重复占号、号源只扣一次、取消回补、签到序号 |
 | 预问诊 | **SSE 响应头与分块事件**、`X-Accel-Buffering: no`、history 恢复、submit 返回 **202**、worker 异步产出报告 |
+| 病历 | 写入后带出患者/医生/科室名与处方明细、重复书写返回 409、**越权读取与越权书写均返回 40302**、管理员可读任意病历 |
+| HIS 同步 | 同步计数与 `success` 状态、**重复同步幂等**、**不重置 `remaining`**、排班日期落在今天之后、患者访问被拒、未知数据源 404、同步日志可查、中文往返无损、医生口令散列逐一独立且强度达标 |
 
 **注**：用 `-coverpkg` 统计 handler 层覆盖率时结果始终为 0，而同一次运行的其它包正常。
 HTTP 响应（404/405/400/401/403 信封、SSE 事件流）只能由 handler 产生，
 说明 handler 确实被执行，属统计口径问题。因此这里用**行为断言**证明覆盖，
 不给出 handler 的覆盖率数字。
 
-### 单元测试（172 个用例）
+### 单元测试（200 个用例）
 
 service 层不依赖任何外部服务（注入内存实现）：
 
@@ -501,13 +563,20 @@ service 层不依赖任何外部服务（注入内存实现）：
 | `worker` | 成功即确认、未超限失败不确认（留给 XAUTOCLAIM 重投）、超限转死信并标记报告失败、消息体损坏丢弃、投递次数未知时保守重试、Stop 幂等 |
 | `audit` | 路由模板推导资源与动作、背压不阻塞、Stop 排空与幂等、落库失败不退出、超长 UA 截断、空串转 NULL |
 | 集成 | 见上节 |
-| `service` | 认证全流程 + 时序防护；目录查询；**抢号全部分支**（幂等重放、在途拒绝、号源不足、预热重试、数据库失败回补、唯一键恢复、排班不存在/已关闭）；**对账**（双方向修正、键不存在跳过、并发修改时放弃、分批扫描、单条失败不中断）；**预问诊**（空/超长消息、归属与状态校验、上游错误映射、失败不留半截回复、历史累积） |
+| `service` | 认证全流程 + 时序防护；目录查询；**抢号全部分支**（幂等重放、在途拒绝、号源不足、预热重试、数据库失败回补、唯一键恢复、排班不存在/已关闭）；**对账**（双方向修正、键不存在跳过、并发修改时放弃、分批扫描、单条失败不中断）；**预问诊**（空/超长消息、归属与状态校验、上游错误映射、失败不留半截回复、历史累积）；**病历**（非医生被拒、无医生档案、越权写入、预约不存在、预约非进行中、重复书写冲突、归属判定矩阵、**先鉴权再查处方**、按角色分流列表、空字段转 NULL）；**同步**（三阶段顺序、**排班用相对日期**、**医生口令非默认且逐次不同**、手机号加密落库、部分失败计入 failed、全部失败标记 failed、数据源错误上报、先写 running 日志再开工、空数据集、同步日志查询） |
 
 抢号部分最关键的用例是 **`TestGrab_DatabaseFailureReleasesRedisStock`**：
 它断言"Redis 已扣减但 MySQL 回滚"时必须回补号源。若不回补，
 号源会凭空蒸发，表现为"总号源 20 却越来越难抢"这种极难排查的现象。
 
 时序防护用例经过反向验证：临时移除防护后该用例失败（比值 0.00），确认其确实能捕获回归。
+
+M6 的两条关键不变量同样做过变异验证（改坏实现后用例确实变红）：
+
+| 不变量 | 变异 | 用例表现 |
+|---|---|---|
+| 同步不重置号源 | `remaining = in.Total` | `expected: 29, actual: 30` |
+| 病历归属校验 | `PatientID == UserID`（判断写反） | 越权患者拿到 `200` 而非 `40302` |
 
 
 ## 中间件链顺序（spec §3.1，固定）

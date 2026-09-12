@@ -49,6 +49,7 @@ security:
 scheduler:
   expire_scan: "@every 1m"      # 释放超时未确认的预约
   stock_reconcile: "@every 5m"  # 以 MySQL 为准校准 Redis 号源
+  his_sync: "@every 1h"          # 从模拟 HIS 同步基础数据
 
 # AI 预问诊上游。
 # 当前仅 mock 可用（决策 #3：先用 Mock 降级，不依赖外部配额）；
