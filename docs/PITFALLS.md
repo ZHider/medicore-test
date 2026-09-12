@@ -209,7 +209,40 @@ require.Eventually(t, func() bool { return q.ackCount() > 0 }, 2*time.Second, 5*
 | 易错点 | 症状 | 防法 |
 |---|---|---|
 | 以为 alpine 镜像自带 gcc | `-race` 报 cgo 不可用；`CGO_ENABLED=0` | 用 **Debian 变体**（`golang:1.27.1`）开箱即用，且比 alpine 快一倍多（alpine 的 `apk add` 无法缓存） |
-| 容器内拉 Go module | 满屏 `dial tcp ... connection refused`，**看着像代码问题其实是网络** | 挂宿主机 `GOMODCACHE` + `GOPROXY=off` |
+| 让容器自己拉 Go module | 满屏 `dial tcp ... connection refused` 或 15 秒超时，**看着像代码问题其实是网络** | **容器一律不出网**：挂宿主机 `GOMODCACHE` + `GOPROXY=off`。见下方硬约束 |
+
+### ⛔ 硬约束：不要给容器配代理，不要让容器出网
+
+这条是**红线**，不是优化建议。原因：
+
+1. **`127.0.0.1` 在容器里指向容器自己**，永远连不到宿主机的代理 —— 这是设计使然。
+   想绕开只能写 `host.docker.internal:PORT`，而那等于**把某个人的个人代理变成
+   CI 与所有开发者的构建依赖**：不可复制、不可审计，别人跑不通。
+2. 如果那个代理是**计费**的，每一次容器构建都在花机主的钱。
+3. 容器**本来就不需要出网**。依赖早已在宿主机上，喂给它即可。
+
+**正确做法**（`race.sh` 就是这个设计）：
+
+```bash
+docker run --rm \
+  -v "$PWD/backend:/app" \
+  -v "$(go env GOMODCACHE):/go/pkg/mod" \   # 喂已下载的模块
+  -v medicore-gocache:/root/.cache/go-build \
+  -w /app -e GOPROXY=off \                  # 明确禁止出网尝试
+  golang:1.27.1 go test -race ./...
+```
+
+`GOPROXY=off` 是**设计而不是补丁**：它让"缺少依赖"变成一条**立刻失败的明确错误**
+（`go: module lookup disabled by GOPROXY=off`，实测 0.03 秒返回），
+而不是 15 秒静默超时后再报一个误导性的网络错误。
+
+**判据（实测）**：容器内 DNS **能**解析外网域名（Docker 内嵌 DNS 正常工作），
+但 TCP 443 **连不上** —— 说明这是 Docker 的 NAT/出口问题，
+**不是代码问题，也不该由"配个代理"来解决**。
+
+> 同理：**不要在仓库里硬编码任何代理地址**（`HTTP_PROXY` / `host.docker.internal:xxxx`）。
+> 全仓库已确认无此类残留，请保持。
+
 | Git Bash 改写容器内路径 | `-w /app` 被转成 `C:/Program Files/Git/app` | `MSYS_NO_PATHCONV=1` |
 | 用 `@latest` 装静态检查工具 | CI 因上游发版而变红（不是你的代码坏了） | **钉版本** |
 | `gofmt -w` 放进 CI | CI 里改文件毫无意义 | 用 `gofmt -l` + 非空则失败 |

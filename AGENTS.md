@@ -355,11 +355,26 @@ bash backend/scripts/race.sh ./internal/service/...
 唯一值得用 alpine 的理由是"与部署镜像保持同一 libc"，但本脚本跑的是单元测试
 （依赖全是内存 fake），musl/glibc 的差异在这里无关紧要。**端到端验证另说。**
 
-**另外两个坑（脚本已处理，写在这里以免重踩）**：
+**⛔ 硬约束：容器一律不出网，也不要给容器配代理。**
 
-1. 容器内**连不上 proxy.golang.org**，必须把宿主机 `GOMODCACHE` 挂进去并设 `GOPROXY=off`，
-   否则满屏 `dial tcp ... connection refused`，看着像代码问题其实是网络；
-2. Git Bash 会把 `-w /app` 改写成 Windows 路径，需要 `MSYS_NO_PATHCONV=1`。
+依赖早已在宿主机上，所以**喂给它**：挂载 `GOMODCACHE` + 设 `GOPROXY=off`。
+`GOPROXY=off` 是设计而非补丁 —— 缺依赖会**立刻**报
+`go: module lookup disabled by GOPROXY=off`（实测 0.03 秒），
+而不是 15 秒超时后报一个误导性的网络错误。
+
+不要配代理的三个理由：
+
+1. `127.0.0.1` 在容器里指向容器自己，连不到宿主机；想绕开只能写
+   `host.docker.internal:PORT`，那等于**把某个人的个人代理变成所有人（含 CI）的构建依赖** ——
+   不可复制，别人跑不通；
+2. 若那个代理是**计费**的，每次容器构建都在花机主的钱；
+3. 本来就不需要 —— 容器只做本地编译与测试。
+
+**实测判据**：容器内 DNS **能**解析外网域名，但 TCP 443 **连不上** ⇒ 这是 Docker 的
+NAT/出口问题，不是代码问题，也不该用"配个代理"来解决。
+**仓库内不得硬编码任何代理地址**（已确认无残留，请保持）。
+
+另一个坑（脚本已处理）：Git Bash 会把 `-w /app` 改写成 Windows 路径，需要 `MSYS_NO_PATHCONV=1`。
 
 **实测**：Debian 镜像跑全量 `./internal/...`，未检出数据竞争。
 build cache 按镜像名分卷存放 —— 不同 libc 的产物缓存键不同，混用只会白等重编译。
