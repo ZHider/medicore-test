@@ -18,7 +18,7 @@ const (
 	RoleAssistant = "assistant"
 )
 
-// 默认超时。LLM 调用是外部依赖，必须有上限，
+// DefaultTimeout 是 LLM 调用的默认超时。LLM 调用是外部依赖，必须有上限，
 // 否则一个卡住的请求会一直占着连接与 goroutine。
 const DefaultTimeout = 30 * time.Second
 

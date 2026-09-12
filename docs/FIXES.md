@@ -14,7 +14,7 @@
 | 维度 | 数值 | 判定 |
 |---|---|---|
 | 端点 | 29 条 | spec §2.1/§8 的接口已全部就绪 |
-| 生产代码 | 86 文件 / 9719 行 | — |
+| 生产代码 | 86 文件 / 9730 行 | — |
 | 测试代码 | 42 文件 / 7553 行 | 测试/生产 ≈ 0.78 |
 | 单元用例 | **251**（240 常规 + 11 个 fuzz 目标） | 全绿 |
 | 集成用例 | **60** | 全绿，**连跑 6 次稳定** |
@@ -22,6 +22,8 @@
 | `service` 覆盖率 | **79.6%** | spec §11.1 要求的就是 service 核心逻辑 |
 | **`repository` 覆盖率** | 包口径 6.4% / **集成口径 67.5%** | 后者才是真实的 |
 | 静态检查 | `go vet` / `staticcheck` / `deadcode` | **三者均 0 告警** |
+| Lint | `golangci-lint` v2.13.2（`.golangci.yml`） | **0 issues**；入口 `nub run backend:lint` |
+| SQL / 索引 | 25 条查询实测 + 3 组 `IGNORE INDEX` 反向验证 | 见 `docs/sql-optimization.md` |
 | 数据竞争 | `-race` 全量通过 | **未检出竞争** |
 | Fuzz | 11 目标 × 30s | 全部通过（回归语料已入库） |
 | Benchmark | 17 项 | 见 `docs/benchmark/` |
@@ -32,17 +34,17 @@
 
 **后端功能完整**：29 条端点全部实现并实测，M1–M6 全部完成，spec G2/G3/G4 达成。
 
-**项目整体未完成** —— spec §12.2 的交付清单里还有四项，**都不属于后端**：
+**项目整体未完成** —— spec §12.2 的交付清单里还有三项，**都不属于后端**：
 
 | 未完成项 | 影响 |
 |---|---|
 | **前端页面**（spec §8：登录/挂号/AI 对话/医生工作台/管理看板） | G1「三角色全流程闭环」只完成了后端一半 —— 患者目前无法真正走完流程 |
 | **全栈 compose 编排**（nginx + 前后端镜像） | G5「一键起全栈」未达成；现有 `deploy/compose.dev.yml` 只起 mysql/redis |
 | `docs/ai-vibe-coding/`（WORKFLOW + prompts + ≥5 reviews） | G6 验收项，目录尚未创建 |
-| `docs/sql-optimization.md` | spec §12.2 要求的 EXPLAIN 对比文档 |
 
-另有一项**部分达成**：`golangci-lint` 零 error —— 没有 `.golangci.yml`，
-但等价的静态检查（`go vet` / `staticcheck` / `deadcode`）已全 0 且进了 CI。
+**性能证据已补齐**：`docs/benchmark/`（17 项基准）与 `docs/sql-optimization.md`
+（25 条业务查询的 EXPLAIN / EXPLAIN ANALYZE 实测 + 3 组索引反向验证）。
+注意两份文档**口径不同、数字不可互相替代**，理由写在 `sql-optimization.md` §0。
 
 **所以："后端基本完成"成立；"项目完成"不成立。** 详见 `MODULES.md` §0.2。
 
@@ -234,11 +236,12 @@ PING 也是 422 µs，**时间几乎全在传输上**。
 | 项 | 内容 | 状态 |
 |---|---|---|
 | **CI** | `.github/workflows/ci.yml`，6 关卡按反馈速度排序 | ⚠️ **从未在 GitHub 真跑过**（仓库未 push） |
-| **静态检查** | `staticcheck` + `deadcode` 纳入 CI（此前只有 `go vet`） | ✅ 0 告警 |
+| **静态检查** | `go vet` / `staticcheck` / `deadcode` 三者 0 告警；另新增 `.golangci.yml`（v2 格式，**实测 0 issues**）与一键入口 `nub run backend:lint` | ✅ |
+| **SQL 优化证据** | `docs/sql-optimization.md`：25 条查询的 EXPLAIN/EXPLAIN ANALYZE + 3 组 `IGNORE INDEX` 反向验证 | ✅ |
 | **Fuzz** | 11 目标，`backend/scripts/fuzz.sh` 遍历（目标从源码 grep，不维护硬编码列表） | ✅ 全部通过 |
 | **Benchmark** | 17 项，`docs/benchmark/` | ✅ |
 | **`-race`** | `backend/scripts/race.sh`（Docker），CI 上用 ubuntu 原生 gcc | ✅ 通过 |
-| **任务入口** | `nub run backend:fuzz` / `:fuzz:long` / `:bench` / `:bench:integration` / `:race` | ✅ |
+| **任务入口** | `nub run backend:fuzz` / `:fuzz:long` / `:bench` / `:bench:integration` / `:race` / `:lint` | ✅ |
 
 ### Fuzz 的净收益
 

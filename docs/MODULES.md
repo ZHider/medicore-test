@@ -26,10 +26,10 @@
 | 模块 | 文件 | 行数 | 职责 |
 |---|---|---|---|
 | `service` | 13 | 2435 | 业务编排、事务边界、**资源层归属校验** |
-| `repository` | 17 | 2282 | **唯一允许 GORM 的层**；SQL 与 Lua 都在这里 |
+| `repository` | 17 | 2284 | **唯一允许 GORM 的层**；SQL 与 Lua 都在这里 |
 | `handler` | 9 | 692 | 参数绑定/校验、统一响应 |
 | `model` | 10 | 672 | PO / DTO / 枚举 + 分页与状态判定 |
-| `middleware` | 8 | 356 | TraceID / Recovery / RequestLog / Metrics / RateLimit / JWT / RBAC / Audit |
+| `middleware` | 8 | 365 | TraceID / Recovery / RequestLog / Metrics / RateLimit / JWT / RBAC / Audit |
 | `audit` | 1 | 317 | 异步批量审计写入器 |
 | `config` | 2 | 305 | 配置加载与启动前校验 |
 | `worker` | 1 | 270 | Redis Stream 消费者 |
@@ -39,7 +39,9 @@
 | `scheduler` | 1 | 157 | cron 三项任务 |
 | 其余工具包（12 个） | 各 1–3 | 22–132 | `secret` `errcode` `mockhis` `jwt` `response` `his` `apperr` `mask` `authctx` `traceid` `metrics` `logger` |
 
-合计 **86 文件 / 9719 行**（另有 `cmd/` 4 个可执行入口共 740 行、`prompts/` 5 个嵌入文件）。
+合计 **86 文件 / 9730 行**（口径：`internal/` 81 + `cmd/` 4 + `prompts/prompts.go` 1；
+另有 `prompts/` 下 4 个被 `go:embed` 嵌入的 md/json 资源）。
+测试代码 42 文件 / 7553 行，**测试/生产 ≈ 0.78**。
 
 ### 0.2 完成状态（诚实的边界）
 
@@ -51,19 +53,19 @@
 | spec §12.2 / 验收项 | 状态 | 说明 |
 |---|---|---|
 | `docs/benchmark/` 压测报告 | ✅ | 17 项基准 + 复现命令 |
+| `docs/sql-optimization.md` | ✅ | 25 条业务查询的 EXPLAIN / EXPLAIN ANALYZE 实测 + 3 组索引反向验证 |
 | 后端分层无越界 | ✅ | `go vet` / `staticcheck` / `deadcode` 三者均 0，已进 CI |
 | **G2** 高并发不超卖 + 高性能查询 | ✅ | `cmd/loadtest` 实测零超卖；分页实测 38× |
 | **G3** AI 结构化 + 优雅降级 + SSE | ✅ | Schema 自检、降级路径、SSE 均已实测 |
 | **G4** 可观测性 + 基础合规 | ✅ | TraceID 贯通、指标齐全、加密存储 + 接口脱敏 |
 | **G1** 三角色全流程闭环 | ⚠️ | 后端接口 100% 就绪；**前端页面未开发** → 患者无法真正走完 |
-| `golangci-lint` 零 error | ⚠️ | 无 `.golangci.yml`；但等价的静态检查已全 0 且在 CI 里跑 |
+| `golangci-lint` 零 error | ✅ | 仓库根 `.golangci.yml`（v2 格式）；本机实测 v2.13.2 **0 issues**；`nub run backend:lint` 一键；已进 CI |
 | **G5** `docker compose up -d --build` 一键起全栈 | ❌ | 只有 `deploy/compose.dev.yml`（依赖服务）；无前后端镜像、无根 compose |
 | **G6** `docs/ai-vibe-coding/` 留痕 | ❌ | 目录不存在（WORKFLOW + prompts + ≥5 reviews） |
-| `docs/sql-optimization.md` | ❌ | EXPLAIN 对比未成文 |
 | 3–5 分钟演示录屏 | ❌ | 前端页面未开发，无从录起 |
 
-> **一句话**：**后端可视为完成**；项目整体还差 **前端页面开发** 与 **四项交付物**
-> （全栈 compose、`docs/ai-vibe-coding/`、`docs/sql-optimization.md`、演示录屏）。
+> **一句话**：**后端可视为完成**；项目整体还差 **前端页面开发** 与 **三项交付物**
+> （全栈 compose、`docs/ai-vibe-coding/`、演示录屏）。
 > 完整待办见 `HANDOVER.md` §3，风险与未决项见 `FIXES.md` §7。
 
 ### 0.3 模块全景与依赖顺序

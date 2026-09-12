@@ -1,3 +1,12 @@
+// Package middleware 提供 HTTP 中间件。
+//
+// 链的顺序是**契约的一部分**，不是随手排的（spec §3.1）：
+//
+//	TraceID → Recovery → RequestLog → Metrics → [RateLimit → JWT → RBAC] → Audit
+//
+// 方括号内三段按**路由**挂载而非全局：探针与 /metrics 必须免认证，
+// 否则 Prometheus 抓取会被 401，健康检查也无法在启动早期生效。
+// 组装入口在 `internal/router`。
 package middleware
 
 import (

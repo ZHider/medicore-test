@@ -82,6 +82,8 @@ func (c *Cache) Del(ctx context.Context, keys ...string) error {
 // 否则一次卡住的上游会永久占住这个键。
 const loadTimeout = 5 * time.Second
 
+// Load 读缓存；未命中时回源并写回。
+//
 // 为什么需要 singleflight：热点键失效（或进程刚启动缓存为空）的瞬间，
 // 可能有成百上千个并发请求同时未命中，若各自回源会把压力全部打到 MySQL，
 // 即所谓的「缓存击穿」。合并后同一键同时只有一个请求回源，其余等待并共享结果。

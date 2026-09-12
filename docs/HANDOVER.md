@@ -21,7 +21,8 @@
 | 6 | `docs/FIXES.md` | **当前健康指标 + 缺陷与改进总账**（要汇报或评估现状时看这份） |
 | 7 | `docs/CODE-REVIEW.md` | 两次审视的质量快照与已知短板 |
 | 8 | `docs/benchmark/` | 性能基准结果与复现命令 |
-| 9 | `spec.md` | 原始需求（注意：它有 4 处缺陷已被修正） |
+| 9 | `docs/sql-optimization.md` | **SQL 与索引实测**：25 条查询的 EXPLAIN/EXPLAIN ANALYZE + 索引反向验证 |
+| 10 | `spec.md` | 原始需求（注意：它有 4 处缺陷已被修正） |
 
 **按目的查**：
 
@@ -32,6 +33,7 @@
 | 知道某个缺陷当时是怎么发生的 | 本文档 §2（按时间线的原始记录） |
 | 改某个模块 | `docs/MODULES.md` 对应章节 |
 | 看性能数字与怎么复现 | `docs/benchmark/README.md` |
+| 看某条 SQL 走了哪个索引、索引该不该删 | `docs/sql-optimization.md` |
 | 看还剩什么没做 | 本文档 §3 |
 
 ---
@@ -58,11 +60,12 @@
 | **审视²** | `6b23e57` | **全量代码审视**：修 1 个 HIGH 级恢复路径缺陷、1 处队列越权、1 处 API 契约倒置；清空死代码与无用泛化；`staticcheck`/`deadcode` 归零 |
 | **补测** | `dddd194` | **针对关键路径补测**（见 §2.8）：直测 repository 层的 Lua/SQL 不变量、限流与令牌撤销、纯逻辑判定；并修掉一个 40% 概率失败的 flaky 用例 |
 | **基建** | `ecaa04c` | **CI / fuzz / benchmark / race**（见 §2.9）：六道 CI 关卡；11 个 fuzz 目标（**找出 2 个真实缺陷**）；`docs/benchmark/` 成型；Docker 里跑通 `-race`；并修掉一个夹具生成器引起的 flaky |
-| **收官** | 本次提交 | **文档固化**：新增 `docs/FIXES.md`（缺陷与改进总账 + 健康指标）与 `docs/PITFALLS.md`（易错点总索引 + 诊断判据）；全量同步各文档指标 |
+| **收官** | `2a0595f` | **文档固化**：新增 `docs/FIXES.md`（缺陷与改进总账 + 健康指标）与 `docs/PITFALLS.md`（易错点总索引 + 诊断判据）；全量同步各文档指标 |
+| **本轮** | 本次提交 | **后端收尾交付物**：`docs/sql-optimization.md`（25 条查询的 EXPLAIN/EXPLAIN ANALYZE 实测 + 3 组 `IGNORE INDEX` 反向验证）；`.golangci.yml`（v2 格式，**实测 0 issues**）+ `nub run backend:lint` + 进 CI；顺带修掉 11 条 ST* 文档缺口；三角色横切复查补齐（患者/管理员**无新缺口**） |
 
 ### 1.2 关键交付物
 
-**后端**（86 文件 / 9719 行生产代码）：
+**后端**（86 文件 / 9730 行生产代码）：
 
 | 模块 | 能力 |
 |---|---|
@@ -112,6 +115,8 @@
 | `docs/schema.sql` | 完整 DDL（11 张表，集成测试每次执行它） |
 | `docs/database-review.md` | 数据库设计评审与验证证据 |
 | `docs/benchmark/` | 性能基准结果与复现命令 |
+| `docs/sql-optimization.md` | SQL 与索引实测（EXPLAIN + 反向验证） |
+| `.golangci.yml` | lint 配置（v2 格式）；入口 `nub run backend:lint` |
 | `backend/README.md` | 后端使用说明 |
 
 **工具命令**：`cmd/genlocal`（密钥生成）、`cmd/seed`（演示数据）、`cmd/loadtest`（并发压测）
@@ -629,10 +634,14 @@ fmt.Sprintf("IT%d", time.Now().UnixNano()%100000)   // 只有 10 万种取值
 | 项 | 说明 |
 |---|---|
 | `docs/ai-vibe-coding/` | spec §10.3 要求 WORKFLOW.md + prompts + **≥5 篇** review。**当前一篇都没有**（G6 验收项） |
-| `docs/sql-optimization.md` | spec §12.2。`docs/benchmark/` **已完成**（分页 / 号源 / 热路径 + 复现命令），还差 EXPLAIN 对比文档 |
 | 前端管理看板拉 `/metrics` | spec §8.1 要求 ECharts 渲染系统健康度 |
-| **按角色横切复查其余角色** | 按**医生**角色走完整工作流发现 2 处缺口；随后全量审视又发现**同类**的候诊队列越权（§2.7-B）。**患者与管理员角色仍未系统复查** —— 这个"同类漏洞逐个冒出来"的模式说明该做一次成体系的排查，而不是等它自己暴露 |
-| `golangci-lint` 配置 | 目前只手工跑 `staticcheck` + `deadcode`；纳入常规链路才能防止死代码回流 |
+| **软件供应链**：`golangci-lint` 未纳入 `go.mod` 工具依赖 | 已装本机 v2.13.2 并进 CI（`go install ...@v2.13.2`），但**版本号写在 `ci.yml` 里而不是 `go.mod` 的 `tool` 指令**。将来 Go 的 tool directive 或 `mise`/`aqua` 能统一管理时应收敛 |
+| `docs/sql-optimization.md` §4.4 的 cron 扫描 | 当前读 4000 行拿 200 条（1.48 ms）**可接受**，故未改。**触发条件已写明**：pending 占比降到 1% 以下时应把 `ORDER BY id` 改为 `ORDER BY expire_at`，让 `idx_status_expire` 变成 range 扫描 |
+
+> **已完成（本轮移出）**：
+> - `docs/sql-optimization.md` —— 25 条业务查询的 EXPLAIN/EXPLAIN ANALYZE + 3 组索引反向验证。
+> - `golangci-lint` 配置 —— `.golangci.yml`（v2）+ `nub run backend:lint` + CI 关卡，实测 0 issues。
+> - **按角色横切复查** —— 三角色已全部查完；患者/管理员结论为无新缺口（医生角色此前修了 2 处）。
 
 ### 3.3 低优先级 / 可选
 
@@ -743,6 +752,7 @@ cd D:\Hider\Code\MediCore
 nub run deps:up
 $env:MEDICORE_MYSQL_PASSWORD='medicore123'
 nub run backend:vet                    # 应为 0
+nub run backend:lint                   # golangci-lint，应为 0 issues
 nub run backend:test                   # 251 个用例通过
 nub run backend:test:integration       # 60 个用例通过
 nub run backend:vuln                   # No vulnerabilities found
@@ -750,14 +760,25 @@ nub run backend:fuzz                   # 11 个 fuzz 目标，各 30s
 nub run backend:bench                  # 纯内存基准
 ```
 
-**当前预期结果**：全部通过，漏洞 0，集成测试 60/60，单元测试 240/240。
+**当前预期结果**：全部通过，漏洞 0，集成测试 60/60，单元测试 240/240，lint 0 issues。
 
-静态检查（本次审视引入，建议纳入常规链路）：
+深一层的静态检查：
 
 ```powershell
 cd backend
-go install honnef.co/go/tools/cmd/staticcheck@latest
+go install honnef.co/go/tools/cmd/staticcheck@latest      # 见下方版本说明
 go install golang.org/x/tools/cmd/deadcode@latest
-& "$env:GOPATH\bin\staticcheck.exe" ./...   # 应为 0
-& "$env:GOPATH\bin\deadcode.exe" -test ./... # 应为 0
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+
+& "$env:GOPATH\bin\staticcheck.exe" ./...      # 应为 0
+& "$env:GOPATH\bin\deadcode.exe" -test ./...   # 应为 0
+golangci-lint run ./...                        # 应为 0 issues（配置在仓库根 .golangci.yml）
 ```
+
+> **`go install` 会出网**，而本机 `HTTP(S)_PROXY` 指向机主的**计费**代理 ——
+> 装之前先确认（见 `AGENTS.md` §2.8）。本项目已装：`staticcheck` / `deadcode` /
+> `govulncheck` / `golangci-lint v2.13.2`，都在 `%GOPATH%\bin`。
+
+**索引与 SQL 的复现**（`docs/sql-optimization.md`）：它灌的是一次性数据集，
+复现要重建 `medicore_test` 并跑播种脚本，具体三条命令见该文档 §1
+（本机实测播种 25 秒；跑一次集成测试就会清掉这份数据）。

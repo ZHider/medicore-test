@@ -50,6 +50,16 @@
 | 写 SQL | **repository** | §1 |
 | 定义 service 需要的能力 | `service/deps.go` 的接口 | §1 |
 
+### 判据 5 · 查询慢 / 这条索引该不该留
+
+| 现象 | 大概率是 | 去哪 |
+|---|---|---|
+| 某条查询"没用上为它建的索引" | **排序方向与索引列序冲突**（`ORDER BY id` vs `idx(status, expire_at)`） | `docs/sql-optimization.md` §4.4 |
+| 索引只吃到了前缀，后面的条件靠过滤 | **等值列与范围列的顺序写反了**，范围列被夹在中间 | 同上 §4.3 |
+| 想知道加/删这条索引值不值 | — | 用 **`IGNORE INDEX` + `EXPLAIN ANALYZE`** 做前后对照（同上 §5），**不要**用索引使用统计表、也**不要**先 DROP 再说 |
+| 认为"这条索引没人用" | 很可能是**外键在悄悄占用它**（`fk_appt_doctor` 就复用了 `idx_doctor_cursor`），或者是统计表在骗你 | 数 `information_schema.statistics`；删之前先试着 DROP 一次（外键依赖会直接拒绝） |
+| 深翻页越来越慢 | **用了 OFFSET** | 改游标分页；三份实测对照见 §9「拿新的测量覆盖旧的」 |
+
 ---
 
 ## 1. 分层与架构
@@ -245,12 +255,15 @@ docker run --rm \
 
 | Git Bash 改写容器内路径 | `-w /app` 被转成 `C:/Program Files/Git/app` | `MSYS_NO_PATHCONV=1` |
 | 用 `@latest` 装静态检查工具 | CI 因上游发版而变红（不是你的代码坏了） | **钉版本** |
+| 抄 `govet.enable-all: true` | 会连带打开 `shadow`（报 14 条全是 `if err := f(); err != nil` 这种惯用写法）与 `fieldalignment`（要求按字段大小重排 DTO）—— 两者都**不在 `go vet` 默认集合里** | 不开 `enable-all`；显式 `disable` 并写明理由 |
+| 加严 lint 靠写 `//nolint` 压红 | 噪音被"抑制"而不是被解决；真实的文档缺口会永远留在抑制名单里（本轮实测：ST* 只报 11 条，全是缺包注释之类**真缺口**，修完后排除项就删掉了） | 先跑一次 → **逐条判定"真问题还是风格偏好"** → 再决定启用或抑制 |
+| 照抄 v1 格式的 `.golangci.yml` | v1 的 `linters-settings` / `issues.exclude-rules` 在 v2 上直接报配置解析错 | v2 用 `version: "2"` + `linters.settings` + `linters.exclusions`；改完跑 `golangci-lint config verify` |
 | **自行引入新依赖** | ① `go mod tidy` 会出网，而本机 `GOPROXY=goproxy.cn` 且 Go 会读 `HTTP_PROXY`/`HTTPS_PROXY` —— 机主的系统变量指向**计费代理**；② 容器侧 `GOPROXY=off`，新依赖在容器里根本拉不到，`race.sh` 直接失败 | **先问再引入**（见 `AGENTS.md` §2.8）；第一反应应该是**用标准库** |
 | `gofmt -w` 放进 CI | CI 里改文件毫无意义 | 用 `gofmt -l` + 非空则失败 |
 | 升级 TS 大版本后不删 `node_modules` | npm 的 peer 变体是粘性的，会解析到旧变体，出现"看起来能用"的假象（**曾因此得出过错误结论**） | 升级大版本后**删掉重装**再下结论 |
 | 前端升到 TS 7 | TS7 是 Go 重写版，不再提供 JS 编译器 API → `vue-tsc` 崩溃、`typescript-eslint` 直接抛错 | 锁 5.9.3 |
 
-细节：`AGENTS.md` §5.2、§5.3、§5.10，`.github/workflows/ci.yml` 注释。
+细节：`AGENTS.md` §5.2、§5.3、§5.10、§5.13，`.github/workflows/ci.yml` 注释。
 
 ---
 
@@ -263,8 +276,11 @@ docker run --rm \
 | 注释与实现相反 | 注释说"跳过损坏条目"，代码是整体失败 | 与实现矛盾的注释比没有注释更糟；**改实现时顺手扫一眼相邻注释** |
 | 报覆盖率不说口径 | `repository` 按包统计 6.4%、集成口径 67.5%，差 10 倍 → 曾经据此误判"数据访问层几乎没测" | 报数时**连口径一起报** |
 | 拿新的测量覆盖旧的 | 分页 38× 与文档里 284× 量级不同（不同查询/口径） | 两个都保留并**写明测量条件**，不要用新数字抹掉旧的 |
+| **把估算值当实测值** | `EXPLAIN` 的 `rows` 是估算：实测出现过"估 21 行、实际扫 30 万行"（差 4 个数量级） | 成本判断用 **`EXPLAIN ANALYZE`** 的实际行数与耗时；只跑了 `EXPLAIN` 就在表里标注 `~` |
+| **拿语义不明的计数器当结论** | `sys.schema_unused_indexes` / `performance_schema.table_io_waits_summary_by_index_usage` 在本环境**自相矛盾**：它把 EXPLAIN 明说用到的 `idx_doctor_cursor` 记为 0 次使用，而单会话 TRUNCATE 后立刻读又能得到正确值 | 用 **`IGNORE INDEX` + `EXPLAIN` 做对照实验**判断索引有没有用；计数表只能当参考。完整失败过程见 `docs/sql-optimization.md` §7 |
+| 用 `DROP INDEX` 做"拿掉索引会怎样"的实验 | `appointments.idx_doctor_cursor` 同时是外键 `fk_appt_doctor` 的支撑索引，DROP 被拒（`ERROR 1553`）；且实验后忘了还原就改变了 schema | 用 **`SELECT ... IGNORE INDEX (...)`** 模拟，不动 schema |
 
-细节：`AGENTS.md` §5.7，`docs/FIXES.md` §1。
+细节：`AGENTS.md` §5.7，`docs/FIXES.md` §1，`docs/sql-optimization.md` §7。
 
 ---
 

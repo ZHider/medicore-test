@@ -4,6 +4,9 @@ name: CI
 #   static → unit/race → integration → fuzz / vuln
 # 前面挂掉时后面的没有必要跑，所以用 needs 串起来；
 # fuzz 与 vuln 较慢且与本轮代码改动关系较弱，并行跑不影响主线反馈。
+#
+# static 关卡的内容：gofmt → go vet → golangci-lint → deadcode。
+# 前两条不需要额外安装、秒级返回，所以放在最前面；后两条要 go install，放后面。
 
 on:
   push:
@@ -44,15 +47,23 @@ jobs:
         working-directory: backend
         run: go vet ./...
 
-      # staticcheck / deadcode 覆盖 go vet 查不到的两类问题：
-      # 死代码，以及一批风格与正确性检查（ST/U 系列）。
-      # 两者都要「装固定版本」——用 @latest 会让 CI 因为上游发版而变红。
-      - name: staticcheck
+      # golangci-lint 取代了原先单独的 staticcheck 步骤：
+      # 它的 staticcheck 检查器就是同一个引擎、同样的 `checks: all`，
+      # 跑两遍只是多花一次 CI 时间。
+      #
+      # 版本**必须固定**：用 @latest 会让 CI 因为上游发版而变红，
+      # 而这类红与本次改动无关，只会训练人"重跑一次"。本机实测 v2.13.2、0 issues。
+      # 配置在仓库根 `.golangci.yml`（v2 格式，与 v1 不兼容）。
+      - name: golangci-lint
         working-directory: backend
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
-          staticcheck ./...
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+          golangci-lint run ./...
 
+      # deadcode 与 golangci-lint 的 unused 是**两种不同算法**，互为补充：
+      #   unused   基于引用计数（包内视角）
+      #   deadcode 基于可达性（从 main/测试入口出发，能抓到整条调用链的死亡）
+      # 所以这一条保留，不是重复。
       - name: deadcode
         working-directory: backend
         run: |

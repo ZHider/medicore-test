@@ -44,7 +44,7 @@ func NewManager(secret, issuer string, accessTTL time.Duration) *Manager {
 	}
 }
 
-// AccessTTL 返回 access_token 有效期（秒），用于响应体中的 expires_in。
+// AccessTTLSeconds 返回 access_token 有效期（秒），用于响应体中的 expires_in。
 func (m *Manager) AccessTTLSeconds() int64 {
 	return int64(m.accessTTL.Seconds())
 }

@@ -13,9 +13,9 @@
 
 - **规格来源**：`spec.md`（Single Source of Truth，v2.0）
 - **当前状态**：后端 M1–M6 全部完成并通过实测（29 个端点）+ 一次全量代码审视；前端仅有脚手架；未做全栈 compose 编排
-- **规模**：生产 86 文件 / 9719 行；测试 42 文件 / 7553 行；311 个用例（251 单元 + 60 集成）全部通过
+- **规模**：生产 86 文件 / 9730 行；测试 42 文件 / 7553 行；311 个用例（251 单元 + 60 集成）全部通过
 - **覆盖率**：整体 34.2%（`service` 79.6% 是核心保障）；`repository` 6.4% 是按包统计的假象，**集成口径 67.5%**
-- **静态检查**：`go vet` / `staticcheck` / `deadcode` 三者均为 0 告警
+- **静态检查**：`go vet` / `staticcheck` / `deadcode` 三者均为 0 告警；另有 `.golangci.yml`（v2 格式，实测 v2.13.2 **0 issues**），一键入口 `nub run backend:lint`
 
 ---
 
@@ -135,6 +135,7 @@ db.Table("doctors AS d").Joins(...).Where("d.deleted_at IS NULL AND u.deleted_at
 | Node | 24.18.0 | 用 **nub**（不是 npm/pnpm） |
 | 前端 TS | **5.9.3** | **不要升到 TS 7**，原因见 §5.2 |
 | 包管理 | `nub` | `nub run <script>`，**没有 make** |
+| golangci-lint | **v2.13.2** | 配置是 **v2 格式**（`version: "2"`）。v1 的 `linters-settings` / `issues.exclude-rules` 字段**互不兼容**，照抄旧文章会直接报配置错。见 §5.13 |
 
 ### 2.8 引入新依赖前必须先问
 
@@ -178,6 +179,7 @@ MediCore/
 │   ├── ARCHITECTURE.md      # 架构与数据流详解
 │   ├── FIXES.md             # ★ 缺陷与改进总账 + 当前健康指标（**向上汇报看这份**）
 │   ├── PITFALLS.md          # ★ 易错点总索引 + 诊断判据（**写代码前扫一眼**）
+│   ├── sql-optimization.md  # ★ SQL/索引实测：EXPLAIN + IGNORE INDEX 反向验证
 │   └── benchmark/           # ★ 性能基准报告（含复现命令与环境说明）
 ├── backend/
 │   ├── cmd/                 # server / genlocal / seed / loadtest
@@ -247,6 +249,7 @@ worker → XREADGROUP → 抢占 → LLM 总结 → Schema 校验 → 失败重�
 | `nub run backend:test` | 单元测试（251 用例，无需外部依赖） |
 | `nub run backend:test:integration` | 集成测试（60 用例，需依赖服务 + 口令环境变量） |
 | `nub run backend:vet` / `backend:fmt` | 静态检查 / 格式化 |
+| `nub run backend:lint` / `backend:lint:fix` | **golangci-lint**（需 `go install`，见 `HANDOVER.md` §6）；当前 0 issues |
 | `nub run backend:vuln` | **漏洞扫描**（需先装 govulncheck） |
 | `staticcheck ./...` / `deadcode -test ./...` | 更深一层的静态检查（需 `go install`，见 `HANDOVER.md` §6） |
 | `nub run backend:fuzz` / `backend:fuzz:long` | 对全部 fuzz 目标各跑 30s / 5m |
@@ -463,6 +466,30 @@ Error 1062: Duplicate entry 'IT57000' for key 'departments.uk_code'
 - `-fuzz` 一次只接受**一个**目标，所以用 `backend/scripts/fuzz.sh` 遍历
   （目标从源码里 grep 出来，不维护硬编码列表）。
 
+### 5.13 lint 的 `enable-all` 会把噪音一起打开
+
+配 golangci-lint 时若图省事写 `govet.enable-all: true`，会额外打开两个
+**不在 `go vet` 默认集合里**的分析器，而它们在本项目上都是纯噪音：
+
+| 分析器 | 实测结果 | 判定 |
+|---|---|---|
+| `shadow` | 报 **14 条**，全是 `if err := f(); err != nil` 与块内 `:=` | 全是 Go 惯用写法。逐条核对过三处 `:=`（`appointment.go:126`、`auth.go:121`、`loadtest/main.go:102`），外层 `err` 之后都没被复用，不存在"吞掉错误" |
+| `fieldalignment` | 要求按字段大小重排 struct | DTO 字段按语义分组排的，为几个字节把 `Status` 挪到 `Diagnosis` 前是纯亏损 |
+
+**推广开的教训**：加严 lint 的正确顺序是
+**先跑一次看它报什么 → 逐条判定"真问题还是风格偏好" → 再决定启用与抑制**，
+而不是先写一堆 `//nolint` 把红压下去。
+
+同一轮里有个**正面**例子：`staticcheck` 的 ST* 系列一开始被我直接排除了 6 条
+（注释格式 / 命名），后来实测发现它只报 **11 条、且全是真实文档缺口**
+（`internal/middleware` 整包缺包注释 8 条 + 3 处导出注释没以标识符名开头）。
+全部修掉之后排除项就删掉了 —— 配置**变严了**，而不是靠抑制变绿。
+
+还有一个格式上的硬坑：`.golangci.yml` 的 **v1 与 v2 格式互不兼容**。
+v1 用 `linters-settings` / `issues.exclude-rules`，v2 用 `version: "2"` +
+`linters.settings` + `linters.exclusions`。照抄网上旧文章会直接报配置解析错。
+改完务必跑一次 `golangci-lint config verify`（本机实测 v2.13.2 通过）。
+
 ---
 
 ## 6. 修改代码时的检查清单
@@ -528,9 +555,9 @@ Error 1062: Duplicate entry 'IT57000' for key 'departments.uk_code'
 | **高** | 前端页面 | 仅有脚手架。spec §8 要求登录/挂号/AI 对话/医生工作台/管理看板（后端接口已全部就绪） |
 | **高** | 全栈 compose 编排 | 目前只有依赖服务的 compose，缺 nginx + 前后端镜像 |
 | 中 | AI Vibe Coding 交付物 | spec §10.3 要求 `docs/ai-vibe-coding/` + ≥5 篇 review。**当前一篇都没有**（G6 验收项） |
-| **中** | 压测报告与 SQL 优化文档 | `docs/benchmark/` **已成型**（分页 / 号源 / 热路径，含复现命令）；还差 `docs/sql-optimization.md`（EXPLAIN 对比） |
-| 中 | **按角色横切复查** | 按"医生"角色走完整工作流时发现 2 处规格缺口（见 `docs/MODULES.md` §6.7）。**患者与管理员角色还没这样查过**，大概率还有同类缺口 |
-| 中 | `golangci-lint` 配置 | `staticcheck` / `deadcode` 已进 CI，但本地没有一键入口；配 `golangci-lint` 可统一 |
+| 中 | 性能证据文档 | `docs/benchmark/`（17 项基准）与 `docs/sql-optimization.md`（25 条查询实测 + 索引反向验证）**均已成型**。遗留：`sql-optimization.md` §4.4 记的 cron 扫描优化（当前代价可接受，触发条件已写明） |
+| 中 | **按角色横切复查** | **三角色已全部查完**：医生角色发现并修了 2 处规格缺口（`docs/MODULES.md` §6.7）；患者/管理员角色复查结论为**无新缺口**（逐端点证据见 `sql-optimization.md` 与 `MODULES.md`）。后续新增返回他人数据的端点时，仍按此清单扫一遍 |
+| 中 | `golangci-lint` 配置 | 见 §4 命令与仓库根 `.golangci.yml` |
 | 中 | CI 首次运行验证 | workflow 已落地并通过 YAML 解析与结构校验，但**从未在 GitHub 上真跑过**（仓库未 push）。首次 push 后需要盯一次 |
 | 低 | `repository` 层覆盖率 | 按包统计 6.4%（假象）；集成口径 **67.5%**。仍为 0% 的主要是缓存命中路径与目录只读查询 |
 | 低 | fuzz 目标可再扩 | 目前覆盖 secret/jwt/audit/mask/model/service 的 11 个目标；`llm` 的流式分片解析、`config` 的取值解析尚未纳入 |

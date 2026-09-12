@@ -40,7 +40,7 @@
 
 **单体分层而非微服务**（spec §1.3 显式声明）：单人全栈项目，拆分只增加运维复杂度。
 
-### 1.1 后端模块全景（24 个包 / 86 文件 / 9719 行）
+### 1.1 后端模块全景（24 个包 / 86 文件 / 9730 行）
 
 分五类。**理解这个分类比记住目录树重要** —— 它决定了"新代码该放哪"。
 
@@ -56,13 +56,13 @@
 ┌─ 分层主干（4）—— 依赖只能向下 ────────────────────────────────┐
 │  handler      692 行  参数绑定/校验、统一响应；禁止 SQL/GORM      │
 │  service     2435 行  业务编排、事务边界、归属校验；禁止 gin      │
-│  repository  2282 行  ★ 唯一允许 GORM 的层；也是唯一放 SQL/Lua 的 │
+│  repository  2284 行  ★ 唯一允许 GORM 的层；也是唯一放 SQL/Lua 的 │
 │  model        672 行  PO / DTO / 枚举 + 分页与状态判定            │
 └──────────────────────────────────────────────────────────────┘
 
 ┌─ HTTP 装配（3）──────────────────────────────────────────────┐
 │  router    190 行  路由分组与中间件挂载（29 条端点）              │
-│  middleware 356 行  TraceID/Recovery/RequestLog/Metrics/        │
+│  middleware 365 行  TraceID/Recovery/RequestLog/Metrics/        │
 │                    RateLimit/JWT/RBAC/Audit                     │
 │  response   77 行  统一响应信封 {code,message,data,trace_id}     │
 └──────────────────────────────────────────────────────────────┘
@@ -583,12 +583,14 @@ UPDATE 里是完全不同的语义。超卖、重复回补、幂等失效这三�
 | **Fuzz**（11 目标） | `nub run backend:fuzz` | 解析不可信输入时的 panic / 越界 / 静默失效。**已找出 2 个真实缺陷** |
 | **Benchmark**（17 项） | `nub run backend:bench` `:bench:integration` | 性能回归。守护"游标恒定 vs OFFSET 线性"与"号源扣减 = 一次往返"两条结论 |
 | **`-race`** | `nub run backend:race` | 数据竞争（本机无 C 编译器，走 Docker；CI 上原生可用） |
+| **静态检查**（4 道） | `nub run backend:fmt` `:vet` `:lint` `:vuln` + `deadcode` | 分层越界、死代码、可格式化、已知漏洞。当前**全 0**；`golangci-lint` 配置见仓库根 `.golangci.yml` |
 
 **集成测试复用 `app.Build()` 的同一套装配**，因此覆盖真实中间件顺序与依赖注入；
 并直接执行 `docs/schema.sql` 建库 —— **DDL 每次都会被真正跑一遍**，
 改了 schema 忘了同步会立刻暴露。
 
-细节：`docs/PITFALLS.md` §6/§7（写测试的坑）、`docs/benchmark/README.md`（性能数据）。
+细节：`docs/PITFALLS.md` §6/§7（写测试的坑）、`docs/benchmark/README.md`（性能数据）、
+`docs/sql-optimization.md`（查询走哪个索引、索引该不该留）。
 
 ### 6.2 覆盖率现状（诚实版）
 

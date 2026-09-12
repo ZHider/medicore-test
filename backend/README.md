@@ -574,6 +574,35 @@ GET ...&cursor=57
 - **脏数据自愈**：反序列化失败按未命中处理并删除该键，避免错误反复出现。
 - **显式失效**：写路径调用 `InvalidateDepartmentCache`，不只依赖 TTL。
 
+## 静态检查
+
+```bash
+nub run backend:fmt      # gofmt -l -w（列出未格式化的并直接改写）
+nub run backend:vet      # go vet ./...
+nub run backend:lint     # golangci-lint run ./...  ← 配置在仓库根 .golangci.yml
+nub run backend:vuln     # govulncheck ./...（需先装）
+```
+
+**当前状态：四者全 0。**
+
+`golangci-lint` 启用的检查器是 `govet` / `staticcheck` / `ineffassign` / `unused`，
+外加 `gofmt` 作为 formatter。**从 0 开始显式列出**（`default: none` + `enable`），
+而不是用 `standard` 预设 —— 预设会随版本升级悄悄变多，让"绿"的含义漂移。
+
+两个刻意**不开**的分析器，原因写在配置注释里：
+
+| 分析器 | 实测 | 为什么不开 |
+|---|---|---|
+| `shadow` | 报 14 条 | 全是 `if err := f(); err != nil` 这种惯用写法；逐条核对过三处 `:=`，不存在吞错误。它也不在 `go vet` 默认集合里 |
+| `fieldalignment` | — | DTO 字段按语义分组排，为省 padding 重排是纯亏损 |
+
+**lint 加严的正确顺序**：先跑一次看它报什么 → 逐条判定"真问题还是风格偏好" →
+再决定启用或抑制。反过来（先写一堆 `//nolint` 把红压下去）只会制造噪音。
+
+> ⚠️ `.golangci.yml` 的 **v1 / v2 格式互不兼容**：v1 是 `linters-settings` +
+> `issues.exclude-rules`，v2 是 `version: "2"` + `linters.settings` + `linters.exclusions`。
+> 改动后跑一次 `golangci-lint config verify`。
+
 ## 测试
 
 分两层：单元测试验证业务分支，集成测试验证"跑起来才能确认"的东西。
@@ -628,6 +657,23 @@ nub run backend:bench:integration    # 真实 MySQL/Redis：分页、号源（�
 
 > 基准的绝对值高度依赖运行环境（本机是 Windows + Docker Desktop，端口转发放大了延迟），
 > **用途是同机对比与回归检测，不是吞吐承诺**。
+
+### SQL 与索引（`docs/sql-optimization.md`）
+
+基准回答"多快"，`docs/sql-optimization.md` 回答"**为什么**是这么快"：
+25 条业务查询逐条给出 `EXPLAIN` 与 `EXPLAIN ANALYZE` 的实际行数/耗时，
+并用 `IGNORE INDEX` 做了 3 组反向验证 —— 拿掉 `idx_user_cursor` 后，
+按用户查审计从"读 7 行"变成"扫完 30 万行"。
+
+那条文档还记了两件容易踩的事：
+
+- **`EXPLAIN` 的 `rows` 是估算，会错得离谱**（实测估 21 行、实际 30 万行），
+  成本判断必须基于 `EXPLAIN ANALYZE`；
+- **`sys.schema_unused_indexes` 在本环境不可信**，别拿它做删索引的依据 ——
+  该文档 §7 记录了完整的方法学失败过程。
+
+复现需要一次性数据集：重建 `medicore_test` + `docs/schema.sql` +
+`backend/scripts/sqlopt-seed.sql`（实测 25 秒），三条命令见该文档 §1。
 
 ### 数据竞争检测
 

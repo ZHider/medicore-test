@@ -11,6 +11,8 @@
     "backend:dev": "cd backend && go run ./cmd/server",
     "backend:build": "cd backend && go build ./...",
     "backend:vet": "cd backend && go vet ./...",
+    "backend:lint": "cd backend && golangci-lint run ./...",
+    "backend:lint:fix": "cd backend && golangci-lint run --fix ./...",
     "backend:fmt": "cd backend && gofmt -l -w ./cmd ./internal ./test",
     "backend:test": "cd backend && go test ./...",
     "backend:test:integration": "cd backend && go test -tags=integration -count=1 ./test/integration/...",
