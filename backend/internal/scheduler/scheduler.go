@@ -3,6 +3,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -11,44 +12,68 @@ import (
 	"github.com/medicore/backend/internal/service"
 )
 
-// expireScanSpec 是超时订单扫描周期。
-// 每分钟一次：确认时限是 15 分钟，1 分钟的释放延迟对号源周转影响可忽略，
-// 又不会让扫描本身成为数据库负担。
-const expireScanSpec = "@every 1m"
+// 默认调度周期（可由配置覆盖）。
+const (
+	defaultExpireScanSpec     = "@every 1m"
+	defaultStockReconcileSpec = "@every 5m"
+)
 
 // jobTimeout 限制单次任务的最长执行时间，避免上一轮未结束、下一轮又启动。
 const jobTimeout = 30 * time.Second
 
+// Options 是调度器配置。
+type Options struct {
+	// ExpireScan 超时订单释放周期，空串用默认值。
+	ExpireScan string
+	// StockReconcile 号源对账周期，空串用默认值。
+	StockReconcile string
+}
+
 // Scheduler 封装 cron 实例。
 type Scheduler struct {
-	cron  *cron.Cron
-	log   *zap.Logger
-	appts *service.AppointmentService
+	cron           *cron.Cron
+	log            *zap.Logger
+	appts          *service.AppointmentService
+	expireScanSpec string
+	reconcileSpec  string
 }
 
 // New 构造 Scheduler 并注册任务（尚未启动）。
-func New(log *zap.Logger, appts *service.AppointmentService) *Scheduler {
+func New(log *zap.Logger, appts *service.AppointmentService, opts Options) *Scheduler {
 	if log == nil {
 		log = zap.NewNop()
+	}
+	if opts.ExpireScan == "" {
+		opts.ExpireScan = defaultExpireScanSpec
+	}
+	if opts.StockReconcile == "" {
+		opts.StockReconcile = defaultStockReconcileSpec
 	}
 
 	return &Scheduler{
 		// WithLogger 让 cron 的内部日志也走结构化日志，
 		// 否则它默认用标准库 log，会污染 JSON 日志流。
-		cron:  cron.New(cron.WithLogger(cronLogAdapter{log})),
-		log:   log,
-		appts: appts,
+		cron:           cron.New(cron.WithLogger(cronLogAdapter{log})),
+		log:            log,
+		appts:          appts,
+		expireScanSpec: opts.ExpireScan,
+		reconcileSpec:  opts.StockReconcile,
 	}
 }
 
-// Start 启动调度并注册超时释放任务。
+// Start 启动调度并注册定时任务。
 func (s *Scheduler) Start() error {
-	_, err := s.cron.AddFunc(expireScanSpec, s.releaseExpired)
-	if err != nil {
-		return err
+	if _, err := s.cron.AddFunc(s.expireScanSpec, s.releaseExpired); err != nil {
+		return fmt.Errorf("注册超时释放任务（周期 %q）: %w", s.expireScanSpec, err)
 	}
+	if _, err := s.cron.AddFunc(s.reconcileSpec, s.reconcileStock); err != nil {
+		return fmt.Errorf("注册对账任务（周期 %q）: %w", s.reconcileSpec, err)
+	}
+
 	s.cron.Start()
-	s.log.Info("scheduler started", zap.String("expire_scan", expireScanSpec))
+	s.log.Info("scheduler started",
+		zap.String("expire_scan", s.expireScanSpec),
+		zap.String("stock_reconcile", s.reconcileSpec))
 	return nil
 }
 
@@ -77,6 +102,28 @@ func (s *Scheduler) releaseExpired() {
 	}
 	if released > 0 {
 		s.log.Info("released expired appointments", zap.Int("count", released))
+	}
+}
+
+// reconcileStock 以 MySQL 为准校准 Redis 号源。
+func (s *Scheduler) reconcileStock() {
+	ctx, cancel := context.WithTimeout(context.Background(), jobTimeout)
+	defer cancel()
+
+	report, err := s.appts.ReconcileStock(ctx)
+	if err != nil {
+		s.log.Error("stock reconcile failed", zap.Error(err))
+		return
+	}
+
+	// 无偏差时不打日志：5 分钟一次的正常路径不该刷屏。
+	// 一旦出现偏差则必须显式记录，且 Corrected 有对应指标可供告警。
+	if report.Corrected > 0 || report.Errors > 0 {
+		s.log.Warn("stock reconcile finished with drift",
+			zap.Int("scanned", report.Scanned),
+			zap.Int("corrected", report.Corrected),
+			zap.Int("skipped", report.Skipped),
+			zap.Int("errors", report.Errors))
 	}
 }
 

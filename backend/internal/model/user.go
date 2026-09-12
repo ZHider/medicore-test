@@ -17,16 +17,6 @@ const (
 	RolePatient Role = "patient"
 )
 
-// Valid 判断角色是否为已知取值。
-func (r Role) Valid() bool {
-	switch r {
-	case RoleAdmin, RoleDoctor, RolePatient:
-		return true
-	default:
-		return false
-	}
-}
-
 // 用户状态。
 const (
 	UserStatusDisabled int8 = 0

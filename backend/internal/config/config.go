@@ -13,11 +13,21 @@ import (
 
 // Config 是应用完整配置。
 type Config struct {
-	App      App      `mapstructure:"app"`
-	Log      Log      `mapstructure:"log"`
-	MySQL    MySQL    `mapstructure:"mysql"`
-	Redis    Redis    `mapstructure:"redis"`
-	Security Security `mapstructure:"security"`
+	App       App       `mapstructure:"app"`
+	Log       Log       `mapstructure:"log"`
+	MySQL     MySQL     `mapstructure:"mysql"`
+	Redis     Redis     `mapstructure:"redis"`
+	Security  Security  `mapstructure:"security"`
+	Scheduler Scheduler `mapstructure:"scheduler"`
+}
+
+// Scheduler 是定时任务配置。用 cron 表达式而非固定常量，
+// 便于按环境调整（例如压测时把对账周期缩短，或临时关闭某项任务）。
+type Scheduler struct {
+	// ExpireScan 超时订单释放周期，空串表示用默认值。
+	ExpireScan string `mapstructure:"expire_scan"`
+	// StockReconcile 号源对账周期，空串表示用默认值。
+	StockReconcile string `mapstructure:"stock_reconcile"`
 }
 
 // Security 是认证与加密相关配置。
@@ -101,6 +111,8 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("security.access_token_ttl", "2h")
 	v.SetDefault("security.refresh_token_ttl", "168h") // 7 天
 	v.SetDefault("security.bcrypt_cost", 10)
+	v.SetDefault("scheduler.expire_scan", "@every 1m")
+	v.SetDefault("scheduler.stock_reconcile", "@every 5m")
 
 	envBindings := map[string]string{
 		"app.env":        "MEDICORE_APP_ENV",
@@ -119,6 +131,9 @@ func Load(path string) (*Config, error) {
 		"security.phone_pepper": "MEDICORE_SECURITY_PHONE_PEPPER",
 		"security.jwt_secret":   "MEDICORE_SECURITY_JWT_SECRET",
 		"security.bcrypt_cost":  "MEDICORE_SECURITY_BCRYPT_COST",
+
+		"scheduler.expire_scan":     "MEDICORE_SCHEDULER_EXPIRE_SCAN",
+		"scheduler.stock_reconcile": "MEDICORE_SCHEDULER_STOCK_RECONCILE",
 	}
 	for key, env := range envBindings {
 		if err := v.BindEnv(key, env); err != nil {

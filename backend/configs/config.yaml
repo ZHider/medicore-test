@@ -43,3 +43,9 @@ security:
   access_token_ttl: 2h      # spec §2.2
   refresh_token_ttl: 168h   # 7 天
   bcrypt_cost: 10           # 不得低于 10
+
+# 定时任务周期（cron 表达式）。可用环境变量覆盖，
+# 例如压测时把对账周期缩短：MEDICORE_SCHEDULER_STOCK_RECONCILE="@every 10s"
+scheduler:
+  expire_scan: "@every 1m"      # 释放超时未确认的预约
+  stock_reconcile: "@every 5m"  # 以 MySQL 为准校准 Redis 号源

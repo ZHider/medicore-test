@@ -82,6 +82,28 @@ func (r *ScheduleRepo) ListByDoctorRange(
 	return items, nil
 }
 
+// ListReconcilable 按 ID 升序扫描需要参与对账的排班：今天起、且仍开放中的。
+//
+// 这是后台全量遍历而非面向用户的翻页，因此用 "id > afterID 升序" 的稳定顺序，
+// 而不是 `id < cursor 降序` 的游标分页语义——后者会在遍历期间漏掉新增行。
+func (r *ScheduleRepo) ListReconcilable(
+	ctx context.Context, from time.Time, afterID uint64, limit int,
+) ([]model.Schedule, error) {
+	var rows []model.Schedule
+
+	err := r.db.WithContext(ctx).
+		Where("status = ?", model.ScheduleStatusOpen).
+		Where("sched_date >= ?", from.Format(time.DateOnly)).
+		Where("id > ?", afterID).
+		Order("id ASC").
+		Limit(limit).
+		Find(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("list reconcilable schedules: %w", err)
+	}
+	return rows, nil
+}
+
 // FindByID 按主键查找排班，供后续抢号流程使用。
 func (r *ScheduleRepo) FindByID(ctx context.Context, id uint64) (*model.Schedule, error) {
 	var s model.Schedule

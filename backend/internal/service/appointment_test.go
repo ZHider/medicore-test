@@ -143,6 +143,21 @@ type fakeStockStore struct {
 	releaseCalls     int
 	lastCapacity     int
 	err              error
+
+	// 对账相关
+	current    map[uint64]int
+	currentErr error
+	casErr     error
+	// casReject 为 true 时模拟"值已被并发修改"，修正被放弃
+	casReject bool
+	casCalls  int
+	casWrites []casWrite
+}
+
+type casWrite struct {
+	ScheduleID uint64
+	Expected   int
+	Desired    int
 }
 
 func (f *fakeStockStore) EnsureLoaded(context.Context, *model.Schedule) error {
@@ -169,6 +184,26 @@ func (f *fakeStockStore) Release(_ context.Context, _ uint64, _, capacity int) (
 		return 0, f.err
 	}
 	return 1, nil
+}
+
+func (f *fakeStockStore) Current(_ context.Context, scheduleID uint64) (int, bool, error) {
+	if f.currentErr != nil {
+		return 0, false, f.currentErr
+	}
+	v, ok := f.current[scheduleID]
+	return v, ok, nil
+}
+
+func (f *fakeStockStore) CompareAndSet(_ context.Context, scheduleID uint64, expected, desired int) (bool, error) {
+	f.casCalls++
+	if f.casErr != nil {
+		return false, f.casErr
+	}
+	if f.casReject {
+		return false, nil
+	}
+	f.casWrites = append(f.casWrites, casWrite{scheduleID, expected, desired})
+	return true, nil
 }
 
 type fakeIdempotencyStore struct {
@@ -213,7 +248,7 @@ func newAppointmentFixture(t *testing.T) *appointmentFixture {
 
 	appts := &fakeAppointmentStore{}
 	janitor := &fakeJanitor{}
-	stock := &fakeStockStore{}
+	stock := &fakeStockStore{current: map[uint64]int{}}
 	idempotency := &fakeIdempotencyStore{acquired: true}
 	schedules := &fakeScheduleStore{
 		scheduleBy: &model.Schedule{

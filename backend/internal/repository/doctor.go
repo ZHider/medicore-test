@@ -118,17 +118,6 @@ func (r *DoctorRepo) ListDepartmentsOfDoctor(ctx context.Context, doctorID uint6
 	return items, nil
 }
 
-// InvalidateDepartmentCache 在医生档案或科室关联变更后清除对应缓存。
-//
-// 显式失效而非只依赖 TTL：改完医生信息后立刻看到旧数据，
-// 在管理端是很难被接受的体验。
-func (r *DoctorRepo) InvalidateDepartmentCache(ctx context.Context, departmentIDs ...uint64) error {
-	if err := r.cache.Del(ctx, DepartmentDoctorsCacheKeys(departmentIDs...)...); err != nil {
-		return fmt.Errorf("invalidate department doctors cache: %w", err)
-	}
-	return nil
-}
-
 // DepartmentDoctorsCacheKeys 返回科室医生列表的缓存键。
 // 导出是为了让写路径（如数据初始化工具）也能精确失效，而不必复制键前缀。
 func DepartmentDoctorsCacheKeys(departmentIDs ...uint64) []string {

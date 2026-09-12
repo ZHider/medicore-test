@@ -139,7 +139,10 @@ func run() error {
 	})
 
 	// 定时任务：释放超时未确认的预约
-	sched := scheduler.New(log, appointmentSvc)
+	sched := scheduler.New(log, appointmentSvc, scheduler.Options{
+		ExpireScan:     cfg.Scheduler.ExpireScan,
+		StockReconcile: cfg.Scheduler.StockReconcile,
+	})
 	if err := sched.Start(); err != nil {
 		return fmt.Errorf("start scheduler: %w", err)
 	}

@@ -82,9 +82,27 @@ return current
 `
 
 var (
-	stockDecrement = redis.NewScript(stockDecrementScript)
-	stockRelease   = redis.NewScript(stockReleaseScript)
+	stockDecrement   = redis.NewScript(stockDecrementScript)
+	stockRelease     = redis.NewScript(stockReleaseScript)
+	stockCompareSwap = redis.NewScript(stockCompareAndSetScript)
 )
+
+// stockCompareAndSetScript 仅当当前值与期望值一致时才更新，并保留原 TTL。
+//
+// 对账必须用它而不是无条件 SET：对账读取 MySQL 与写入 Redis 之间存在时间窗，
+// 若期间有并发扣减，无条件 SET 会把已扣掉的号源"还回去"，反而制造超卖。
+// 比对失败就放弃本次修正，交给下一轮——偏差会一直存在，但绝不会因此多放号。
+//
+// KEYS[1] 号源键   ARGV[1] 期望值   ARGV[2] 目标值
+// 返回 1 已修正 / 0 值已变化，放弃
+const stockCompareAndSetScript = `
+local key = KEYS[1]
+if redis.call('GET', key) == ARGV[1] then
+  redis.call('SET', key, ARGV[2], 'KEEPTTL')
+  return 1
+end
+return 0
+`
 
 // StockRepo 负责 Redis 上的号源计数。
 //
@@ -146,12 +164,18 @@ func (r *StockRepo) Current(ctx context.Context, scheduleID uint64) (int, bool, 
 	return val, true, nil
 }
 
-// Evict 删除号源键，用于排班被取消等场景。
-func (r *StockRepo) Evict(ctx context.Context, scheduleID uint64) error {
-	if err := r.rdb.Del(ctx, StockKey(scheduleID)).Err(); err != nil {
-		return fmt.Errorf("evict stock: %w", err)
+// CompareAndSet 仅当当前值等于 expected 时把它改成 desired。
+// 返回 false 表示值已被并发修改，本次修正被放弃。
+func (r *StockRepo) CompareAndSet(
+	ctx context.Context, scheduleID uint64, expected, desired int,
+) (bool, error) {
+	res, err := stockCompareSwap.Run(
+		ctx, r.rdb, []string{StockKey(scheduleID)}, expected, desired,
+	).Int()
+	if err != nil {
+		return false, fmt.Errorf("compare and set stock: %w", err)
 	}
-	return nil
+	return res == 1, nil
 }
 
 // stockTTL 让号源键在就诊日结束后自然过期，避免长期占用内存。

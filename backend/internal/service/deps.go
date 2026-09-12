@@ -58,6 +58,8 @@ type scheduleStore interface {
 	FindByID(ctx context.Context, id uint64) (*model.Schedule, error)
 	ListByDepartmentDate(ctx context.Context, departmentID uint64, date time.Time, cursor uint64, limit int) ([]model.ScheduleListItem, error)
 	ListByDoctorRange(ctx context.Context, doctorID uint64, from, to time.Time, cursor uint64, limit int) ([]model.ScheduleListItem, error)
+	// ListReconcilable 供对账任务全量扫描使用。
+	ListReconcilable(ctx context.Context, from time.Time, afterID uint64, limit int) ([]model.Schedule, error)
 }
 
 // stockStore 是 Redis 号源计数能力。
@@ -65,6 +67,8 @@ type stockStore interface {
 	EnsureLoaded(ctx context.Context, s *model.Schedule) error
 	Decrement(ctx context.Context, scheduleID uint64, qty int) (repository.StockResult, error)
 	Release(ctx context.Context, scheduleID uint64, qty, capacity int) (int, error)
+	Current(ctx context.Context, scheduleID uint64) (int, bool, error)
+	CompareAndSet(ctx context.Context, scheduleID uint64, expected, desired int) (bool, error)
 }
 
 // idempotencyStore 是抢号幂等键能力。

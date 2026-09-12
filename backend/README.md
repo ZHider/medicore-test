@@ -177,6 +177,34 @@ MEDICORE_MYSQL_PASSWORD=medicore123 go run ./cmd/server
 队列会返回患者姓名原文。医生必须能识别面前的患者，把姓名打成"张*"会让队列失去意义；
 该接口仅对 doctor/admin 开放。这是 spec §2.2 脱敏规则的**有意例外**。
 
+### 号源对账（兜底一致性）
+
+抢号是"先扣 Redis 再写 MySQL"。若进程在两步之间崩溃、或失败后回补 Redis 也失败，
+两边就会产生偏差。`ReconcileStock` 按如下规则以 MySQL 为准校准 Redis：
+
+| 情况 | 处理 |
+|---|---|
+| Redis == MySQL | 无需处理 |
+| **Redis < MySQL** | 修正。典型偏差（回补失败/崩溃），表现为"明明有余号却抢不到" |
+| **Redis > MySQL** | 修正。超卖风险方向，必须向下压回 |
+| Redis 键不存在 | **跳过**。属于尚未预热或已自然过期，不是偏差；若当成 0 去写，会把本可从数据库加载的号源压死 |
+
+**修正必须用比对更新（`CompareAndSet`）而不是无条件 `SET`。**
+对账读取 MySQL 与写入 Redis 之间存在时间窗，无条件覆盖会把并发请求刚扣掉的号源"还回去"，
+反而制造超卖。比对失败就放弃本次修正，交给下一轮——偏差会多存在一会儿，但绝不会因此多放号。
+
+周期由 `scheduler.stock_reconcile` 配置（默认 5 分钟）。
+每次修正都会打 Warn 日志并累加 `stock_reconcile_total{result="corrected"}`，可直接配置告警。
+
+实测（把对账周期临时调成 10 秒）：
+
+```
+Redis < MySQL : 1  -> 0    （3 秒内修正）
+Redis > MySQL : 26 -> 19   （6 秒内修正）
+键不存在      : 未被误创建
+stock_reconcile_total{result="corrected"} 2
+```
+
 ## 并发压测
 
 ```bash
@@ -208,8 +236,9 @@ Redis 号源键  : 存在=true 值=0
 - [x] **M2** 认证鉴权：AES-GCM + HMAC 摘要 + bcrypt + JWT 双令牌 + Redis 刷新轮换 + RBAC + 令牌桶限流
 - [x] **M3** 科室 / 医生（多对多）/ 排班查询 + 游标分页 + Redis 缓存（含缓存击穿防护）
 - [x] **M4** 抢号（幂等 + Lua 原子扣减 + 预热自愈 + 乐观条件 + cron 超时释放 + 签到队列）
+- [x] **M4.5** 号源对账（以 MySQL 为准校准 Redis，比对更新防覆盖）
 - [ ] M5 AI 预问诊（Mock LLM + SSE + Stream 异步总结 + Schema 降级）
-- [ ] M6 病历 / 处方 / 审计 / HIS 同步 / 对账任务
+- [ ] M6 病历 / 处方 / 审计 / HIS 同步
 
 ## 演示数据
 
@@ -251,7 +280,7 @@ GET ...&cursor=57
 nub run backend:test      # go test ./...
 ```
 
-87 个用例，service 层不依赖任何外部服务（注入内存实现）：
+96 个用例，service 层不依赖任何外部服务（注入内存实现）：
 
 | 包 | 覆盖内容 |
 |---|---|
@@ -261,7 +290,7 @@ nub run backend:test      # go test ./...
 | `config` | 密钥非空/长度/可预测性（单一字符、短周期、升序、占位词） |
 | `model` | 游标解析、size 收敛、分页标志与探测行裁剪 |
 | `middleware` | JWT 缺失/非法/过期三态、RBAC 放行与拒绝、无令牌优先 401 |
-| `service` | 认证全流程 + 时序防护；目录查询；**抢号全部分支**（幂等重放、在途拒绝、号源不足、预热重试、数据库失败回补、唯一键恢复、排班不存在/已关闭） |
+| `service` | 认证全流程 + 时序防护；目录查询；**抢号全部分支**（幂等重放、在途拒绝、号源不足、预热重试、数据库失败回补、唯一键恢复、排班不存在/已关闭）；**对账**（双方向修正、键不存在跳过、并发修改时放弃、分批扫描、单条失败不中断） |
 
 抢号部分最关键的用例是 **`TestGrab_DatabaseFailureReleasesRedisStock`**：
 它断言"Redis 已扣减但 MySQL 回滚"时必须回补号源。若不回补，
