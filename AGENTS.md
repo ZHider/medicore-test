@@ -180,6 +180,7 @@ MediCore/
 │   ├── FIXES.md             # ★ 缺陷与改进总账 + 当前健康指标（**向上汇报看这份**）
 │   ├── PITFALLS.md          # ★ 易错点总索引 + 诊断判据（**写代码前扫一眼**）
 │   ├── sql-optimization.md  # ★ SQL/索引实测：EXPLAIN + IGNORE INDEX 反向验证
+│   ├── contract-sync.md     # ★ **待做方案存档**：前后端契约同步（生成 + 检测），尚未实施
 │   ├── ai-vibe-coding/      # ★ spec §10.3 交付物：WORKFLOW + 提示词指针 + 6 篇逐模块 review
 │   └── benchmark/           # ★ 性能基准报告（含复现命令与环境说明）
 ├── backend/
@@ -597,6 +598,7 @@ v1 用 `linters-settings` / `issues.exclude-rules`，v2 用 `version: "2"` +
 | 中 | AI Vibe Coding 交付物 | **后端部分已完成**：`docs/ai-vibe-coding/`（WORKFLOW + prompts + **6 篇**逐模块 review，覆盖 M1–M6）。**遗留**：前端还没有页面，因此没有前端 review；review 的"遗留与未验证"节里记的缺口见各篇 §六 |
 | 中 | 性能证据文档 | `docs/benchmark/`（17 项基准）与 `docs/sql-optimization.md`（25 条查询实测 + 索引反向验证）**均已成型**。遗留：`sql-optimization.md` §4.4 记的 cron 扫描优化（当前代价可接受，触发条件已写明） |
 | 中 | **按角色横切复查** | **三角色已全部查完**：医生角色发现并修了 2 处规格缺口（`docs/MODULES.md` §6.7）；患者/管理员角色复查结论为**无新缺口**（逐端点证据见 `sql-optimization.md` 与 `MODULES.md`）。后续新增返回他人数据的端点时，仍按此清单扫一遍 |
+| 中 | **前后端契约同步（方案已存档，未实施）** | `docs/contract-sync.md` —— 让前端动态/同步/可靠地拿到**接口与数据结构**。核心判断：**生成解决"省事"，测试解决"可信"**。建议先做 L1（契约金文件 + 双向测试，**零新依赖**，约 270 行）。**需要时再按该文档 §6 执行** |
 | 中 | `golangci-lint` 配置 | 见 §4 命令与仓库根 `.golangci.yml` |
 | 中 | CI 首次运行验证 | workflow 已落地并通过 YAML 解析与结构校验，但**从未在 GitHub 上真跑过**（仓库未 push）。首次 push 后需要盯一次 |
 | 低 | `repository` 层覆盖率 | 按包统计 6.4%（假象）；集成口径 **67.5%**。仍为 0% 的主要是缓存命中路径与目录只读查询 |
