@@ -136,6 +136,27 @@ db.Table("doctors AS d").Joins(...).Where("d.deleted_at IS NULL AND u.deleted_at
 | 前端 TS | **5.9.3** | **不要升到 TS 7**，原因见 §5.2 |
 | 包管理 | `nub` | `nub run <script>`，**没有 make** |
 
+### 2.8 引入新依赖前必须先问
+
+**这条是硬约束：不要自行 `go get` / `npm install` / 改 `go.mod` 加依赖，先问。**
+
+原因不是保守，而是**这个动作会出网**：
+
+- 本机的 `GOPROXY` 是 `https://goproxy.cn,direct`，而 Go 的 `net/http` **会读
+  `HTTP_PROXY` / `HTTPS_PROXY` 环境变量** —— 机主的系统变量指向一个**计费的**代理。
+  一次 `go mod tidy` 引入新依赖，就是一次经由它的真实请求。
+- 容器侧是另一套规则：**容器一律不出网**（`GOPROXY=off`，见 §5.10），
+  所以新依赖在容器里根本拉不到 —— 会让 `race.sh` 等直接失败。
+
+**需要新依赖时**：先说明「要什么、为什么现有依赖做不到」，得到同意后再动手。
+多数情况下第一反应应该是**用标准库**（`net/http`、`crypto/*`、`sync`、
+`encoding/json`、`database/sql` 等覆盖了本项目大部分需求），
+而不是引入一个包。
+
+**顺带一句**：这个项目的依赖面已经偏大 —— Gin v1.12 会**传递引入**
+`mongo-driver` 与 `quic-go`（本项目不用 MongoDB、不用 HTTP/3），两者都被编译进二进制，
+是 32MB 体积与攻击面放大的来源。再加依赖前值得想一下这个方向。
+
 ---
 
 ## 3. 项目架构
@@ -462,6 +483,7 @@ Error 1062: Duplicate entry 'IT57000' for key 'departments.uk_code'
 - [ ] 新增解析不可信输入的函数 → 补一个 fuzz 目标（见 §5.12）
 - [ ] 改了并发/共享状态 → 跑一次 `nub run backend:race`
 - [ ] 改了热路径或分页 → 跑一次相关基准，确认没有数量级退化
+- [ ] **没有自行引入新依赖**（要先问，见 §2.8）
 - [ ] 改了表结构 → 更新 `docs/schema.sql`（真实来源）+ 备忘 `docs/database-review.md`
 - [ ] 改了行为 → 更新 `backend/README.md`
 

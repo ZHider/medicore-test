@@ -245,6 +245,7 @@ docker run --rm \
 
 | Git Bash 改写容器内路径 | `-w /app` 被转成 `C:/Program Files/Git/app` | `MSYS_NO_PATHCONV=1` |
 | 用 `@latest` 装静态检查工具 | CI 因上游发版而变红（不是你的代码坏了） | **钉版本** |
+| **自行引入新依赖** | ① `go mod tidy` 会出网，而本机 `GOPROXY=goproxy.cn` 且 Go 会读 `HTTP_PROXY`/`HTTPS_PROXY` —— 机主的系统变量指向**计费代理**；② 容器侧 `GOPROXY=off`，新依赖在容器里根本拉不到，`race.sh` 直接失败 | **先问再引入**（见 `AGENTS.md` §2.8）；第一反应应该是**用标准库** |
 | `gofmt -w` 放进 CI | CI 里改文件毫无意义 | 用 `gofmt -l` + 非空则失败 |
 | 升级 TS 大版本后不删 `node_modules` | npm 的 peer 变体是粘性的，会解析到旧变体，出现"看起来能用"的假象（**曾因此得出过错误结论**） | 升级大版本后**删掉重装**再下结论 |
 | 前端升到 TS 7 | TS7 是 Go 重写版，不再提供 JS 编译器 API → `vue-tsc` 崩溃、`typescript-eslint` 直接抛错 | 锁 5.9.3 |
