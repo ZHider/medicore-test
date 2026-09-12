@@ -140,6 +140,7 @@ MediCore/
 │   ├── database-review.md   # 数据库设计评审与 22 项验证证据
 │   ├── CODE-REVIEW.md       # 整体审视报告
 │   ├── HANDOVER.md          # 开发历程、错误记录、未完成工作
+│   ├── MODULES.md           # ★ 逐模块结构与决策（改代码前先查这里）
 │   └── ARCHITECTURE.md      # 架构与数据流详解
 ├── backend/
 │   ├── cmd/                 # server / genlocal / seed / loadtest
