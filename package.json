@@ -13,6 +13,8 @@
     "backend:vet": "cd backend && go vet ./...",
     "backend:fmt": "cd backend && gofmt -l -w ./cmd ./internal",
     "backend:test": "cd backend && go test ./...",
+    "backend:seed": "cd backend && go run ./cmd/seed",
+    "backend:genlocal": "cd backend && go run ./cmd/genlocal",
 
     "frontend:dev": "nub --cwd frontend run dev",
     "frontend:build": "nub --cwd frontend run build",

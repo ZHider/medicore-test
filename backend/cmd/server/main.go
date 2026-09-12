@@ -107,12 +107,21 @@ func run() error {
 		RefreshTTL:  cfg.Security.RefreshTokenTTL,
 	})
 
+	// 缓存与目录查询
+	cache := repository.NewCache(rdb, log)
+	catalogSvc := service.NewCatalogService(service.CatalogDeps{
+		Departments: repository.NewDepartmentRepo(db),
+		Doctors:     repository.NewDoctorRepo(db, cache),
+		Schedules:   repository.NewScheduleRepo(db),
+	})
+
 	engine := router.New(router.Deps{
 		Config:     cfg,
 		Logger:     log,
 		Redis:      rdb,
 		Health:     healthSvc,
 		Auth:       authSvc,
+		Catalog:    catalogSvc,
 		JWTManager: jwtManager,
 	})
 

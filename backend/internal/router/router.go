@@ -23,6 +23,7 @@ type Deps struct {
 	Redis      *redis.Client
 	Health     *service.HealthService
 	Auth       *service.AuthService
+	Catalog    *service.CatalogService
 	JWTManager *jwt.Manager
 }
 
@@ -57,6 +58,7 @@ func New(d Deps) *gin.Engine {
 	r.GET("/metrics", gin.WrapH(middleware.MetricsHandler()))
 
 	registerAuthRoutes(r, d)
+	registerCatalogRoutes(r, d)
 
 	// 未匹配路由/方法也必须返回统一信封，否则客户端会拿到 gin 的纯文本 404，
 	// 无法按 code 字段分支处理（spec §3.3）。
@@ -91,4 +93,20 @@ func registerAuthRoutes(r *gin.Engine, d Deps) {
 	secured.Use(middleware.JWT(d.JWTManager))
 	secured.POST("/logout", h.Logout)
 	secured.GET("/me", h.Me)
+}
+
+// registerCatalogRoutes 挂载科室 / 医生 / 排班查询（spec §6.1，角色=登录）。
+//
+// 整个分组统一要求登录：这些是院内数据，不应匿名可见。
+func registerCatalogRoutes(r *gin.Engine, d Deps) {
+	h := handler.NewCatalogHandler(d.Catalog)
+
+	v1 := r.Group("/api/v1")
+	v1.Use(middleware.JWT(d.JWTManager))
+
+	v1.GET("/departments", h.ListDepartments)
+	v1.GET("/departments/:id/doctors", h.ListDoctorsByDepartment)
+	v1.GET("/departments/:id/schedules", h.ListSchedulesByDepartment)
+	v1.GET("/doctors/:id", h.DoctorDetail)
+	v1.GET("/doctors/:id/schedules", h.ListSchedulesByDoctor)
 }

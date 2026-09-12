@@ -101,6 +101,18 @@ MEDICORE_MYSQL_PASSWORD=medicore123 go run ./cmd/server
 | POST | `/api/v1/auth/logout` | 需登录 | 撤销刷新令牌 |
 | GET | `/api/v1/auth/me` | 需登录 | 返回本人脱敏资料 |
 
+### 业务查询（M3）
+
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/api/v1/departments` | 科室列表（启用中） |
+| GET | `/api/v1/departments/:id/doctors` | 科室下医生列表，**Redis 缓存** |
+| GET | `/api/v1/departments/:id/schedules?date=&cursor=&size=` | 按科室+就诊日查询号源，游标分页 |
+| GET | `/api/v1/doctors/:id` | 医生详情（含所属科室，多对多） |
+| GET | `/api/v1/doctors/:id/schedules?from=&to=&cursor=&size=` | 医生排班，游标分页 |
+
+全部需要登录（院内数据不应匿名可见）。
+
 ### RBAC
 
 `middleware.RequireRole(model.RoleAdmin, ...)` 挂在 JWT 之后使用。
@@ -126,10 +138,44 @@ MEDICORE_MYSQL_PASSWORD=medicore123 go run ./cmd/server
 
 - [x] **M1** 配置 / 日志 / 中间件链 / 健康检查 / 分层骨架 / dev compose
 - [x] **M2** 认证鉴权：AES-GCM + HMAC 摘要 + bcrypt + JWT 双令牌 + Redis 刷新轮换 + RBAC + 令牌桶限流
-- [ ] M3 科室 / 医生（多对多）/ 排班 + 游标分页 + 缓存
+- [x] **M3** 科室 / 医生（多对多）/ 排班查询 + 游标分页 + Redis 缓存（含缓存击穿防护）
 - [ ] M4 抢号（幂等 + Lua + 乐观锁 + cron 释放 + 签到队列）
 - [ ] M5 AI 预问诊（Mock LLM + SSE + Stream 异步总结 + Schema 降级）
 - [ ] M6 病历 / 处方 / 审计 / HIS 同步
+
+## 演示数据
+
+```bash
+go run ./cmd/seed      # 幂等，可反复执行
+```
+
+写入 4 个科室、12 名医生（含科室关联）、每人 7 天 × 上午/下午的排班（共约 168 条）。
+执行完会**清除科室医生缓存**，否则此前缓存下的空列表会掩盖新数据直到 TTL 过期。
+
+## 游标分页
+
+所有列表接口统一使用游标分页，**禁止 OFFSET**（spec §5.2）：
+
+```
+GET /api/v1/departments/1/schedules?date=2026-09-12&size=2
+→ { "items": [...], "next_cursor": 57, "has_more": true }
+GET ...&cursor=57
+```
+
+- 仓储层固定查询 `limit+1` 条，多出的一条只用于判断 `has_more`，**不发额外 COUNT**。
+- `size` 上限 100：否则 `size=999999` 会被当作合法请求，等价于一次全表扫描。
+- 实测对比（23 万行）：`OFFSET 100000` 耗时 137ms、扫描 20 万行；游标 0.483ms、恒定 20 行。
+
+## 缓存设计
+
+科室医生列表走 Redis 缓存（spec §6.1），键 `cache:dept_doctors:{id}`，TTL 5 分钟。
+
+- **缓存击穿防护**：`repository.Load` 用 `singleflight` 合并并发回源。
+  热点键失效瞬间若有大量请求同时未命中，各自回源会把压力全打到 MySQL。
+- **降级不静默**：缓存读写失败都不阻断请求（退化为每次回源），但一律记日志，
+  否则缓存长期失效也无人察觉。
+- **脏数据自愈**：反序列化失败按未命中处理并删除该键，避免错误反复出现。
+- **显式失效**：写路径调用 `InvalidateDepartmentCache`，不只依赖 TTL。
 
 ## 测试
 
@@ -137,15 +183,17 @@ MEDICORE_MYSQL_PASSWORD=medicore123 go run ./cmd/server
 nub run backend:test      # go test ./...
 ```
 
-41 个用例，service 层不依赖任何外部服务（注入内存实现）：
+67 个用例，service 层不依赖任何外部服务（注入内存实现）：
 
 | 包 | 覆盖内容 |
 |---|---|
 | `secret` | 加解密往返、随机 nonce、篡改检测、摘要确定性、bcrypt 边界 |
 | `jwt` | 签发解析、过期、错密钥、错签发方、**alg=none 伪造拒绝** |
 | `mask` | 手机号/身份证/姓名脱敏，且结果不等于原文 |
+| `config` | 密钥非空/长度/可预测性（单一字符、短周期、升序、占位词）、生产守卫 |
+| `model` | 游标解析、size 收敛、分页标志与探测行裁剪 |
 | `middleware` | JWT 缺失/非法/过期三态、RBAC 放行与拒绝、无令牌优先 401 |
-| `service` | 注册角色固定为 patient、唯一键冲突转 40004、登录三态、**时序防护**、刷新轮换与重放拒绝、登出幂等、脱敏与密文落盘 |
+| `service` | 认证全流程 + 时序防护；科室不存在返回 404、多对多详情、分页传递、错误包装为 500 且不泄漏内部细节 |
 
 时序防护用例经过反向验证：临时移除防护后该用例失败（比值 0.00），确认其确实能捕获回归。
 

@@ -38,3 +38,22 @@ type healthChecker interface {
 	PingMySQL(ctx context.Context) error
 	PingRedis(ctx context.Context) error
 }
+
+// departmentStore 是科室读取能力。
+type departmentStore interface {
+	ListActive(ctx context.Context) ([]model.DepartmentBrief, error)
+	Exists(ctx context.Context, id uint64) (bool, error)
+}
+
+// doctorStore 是医生档案读取能力（含多对多的科室归属）。
+type doctorStore interface {
+	ListByDepartment(ctx context.Context, departmentID uint64) ([]model.DoctorListItem, error)
+	FindDetail(ctx context.Context, doctorID uint64) (*model.DoctorDetail, error)
+	ListDepartmentsOfDoctor(ctx context.Context, doctorID uint64) ([]model.DepartmentBrief, error)
+}
+
+// scheduleStore 是排班读取能力。
+type scheduleStore interface {
+	ListByDepartmentDate(ctx context.Context, departmentID uint64, date time.Time, cursor uint64, limit int) ([]model.ScheduleListItem, error)
+	ListByDoctorRange(ctx context.Context, doctorID uint64, from, to time.Time, cursor uint64, limit int) ([]model.ScheduleListItem, error)
+}
