@@ -165,6 +165,17 @@ func (w *SummaryWorker) loop() {
 		cancel()
 
 		if err != nil {
+			// 消费者组消失（Redis 被 flush / 重启未持久化 / 误操作）时必须重建，
+			// 否则这个循环会永远报同一个错，所有总结任务静默卡死。
+			if repository.IsNoGroupError(err) {
+				w.log.Warn("summary consumer group missing, recreating")
+				if gErr := w.queue.EnsureGroup(ctx); gErr != nil {
+					w.log.Error("recreate summary consumer group failed", zap.Error(gErr))
+					w.sleep(backoffOnError)
+				}
+				continue
+			}
+
 			// 队列不可用：退避后重试，不能让循环空转刷日志
 			w.log.Error("read summary stream failed", zap.Error(err))
 			w.sleep(backoffOnError)

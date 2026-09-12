@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+
+	"github.com/medicore/backend/internal/repository"
 )
 
 // --- 内存实现 ---
@@ -18,7 +20,8 @@ import (
 type fakeQueue struct {
 	mu sync.Mutex
 
-	groupErr error
+	groupErr   error
+	groupCalls int
 
 	// readResults 按顺序返回；用完后返回空
 	readResults [][]redis.XMessage
@@ -42,7 +45,18 @@ func newFakeQueue() *fakeQueue {
 	return &fakeQueue{deliveryCounts: map[string]int64{}}
 }
 
-func (f *fakeQueue) EnsureGroup(context.Context) error { return f.groupErr }
+func (f *fakeQueue) EnsureGroup(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.groupCalls++
+	return f.groupErr
+}
+
+func (f *fakeQueue) ensureGroupCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.groupCalls
+}
 
 func (f *fakeQueue) Read(ctx context.Context, _ string, _ int, _ time.Duration) ([]redis.XMessage, error) {
 	f.mu.Lock()
@@ -331,3 +345,35 @@ func TestLoop_ConsumesQueuedMessages(t *testing.T) {
 	}
 	assert.Equal(t, 1, q.ackCount())
 }
+
+// 消费者组消失（Redis 被 flush / 重启未持久化 / 误操作）时必须自动重建。
+// 否则 worker 会永远循环报同一个错，所有总结任务静默卡死，
+// 而唯一的症状只是日志里反复出现的同一条错误。
+func TestLoop_RecreatesMissingConsumerGroup(t *testing.T) {
+	q := newFakeQueue()
+	q.readErr = redisErr("NOGROUP No such key")
+	w := newTestWorker(q, &fakeSummarizer{})
+
+	require.NoError(t, w.Start())
+	defer w.Stop()
+
+	require.Eventually(t, func() bool { return q.ensureGroupCalls() >= 2 },
+		3*time.Second, 20*time.Millisecond,
+		"Start 时建组一次，检测到 NOGROUP 后应再次建组")
+}
+
+// IsNoGroupError 只认 redis.Error 类型：普通 error 即使文案含 NOGROUP 也不应误判，
+// 否则会给一个不是分组缺失的错误反复重建分组。
+func TestIsNoGroupError(t *testing.T) {
+	assert.True(t, repository.IsNoGroupError(redisErr("NOGROUP No such key")))
+	assert.False(t, repository.IsNoGroupError(errors.New("NOGROUP 只是文案里恰好出现")))
+	assert.False(t, repository.IsNoGroupError(nil))
+	assert.False(t, repository.IsNoGroupError(redis.Nil))
+}
+
+// redisErr 是 redis.Error 的测试实现。
+// redis.Error 是接口（要求实现 RedisError() 方法），不能由字符串直接转换。
+type redisErr string
+
+func (e redisErr) Error() string { return string(e) }
+func (e redisErr) RedisError()   {}

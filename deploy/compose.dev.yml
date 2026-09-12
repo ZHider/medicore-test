@@ -25,6 +25,7 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
       - ../docs/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./mysql/init-test-db.sql:/docker-entrypoint-initdb.d/02-test-db.sql:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-prootpass"]
       interval: 5s

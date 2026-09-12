@@ -161,6 +161,16 @@ func (r *SummaryQueueRepo) PendingCount(ctx context.Context) (int64, error) {
 	return info.Count, nil
 }
 
+// IsNoGroupError 判断错误是否为"消费者组不存在"。
+//
+// 需要单独识别它：消费者组可能因为 Redis 被 flush、重启未持久化、
+// 或误操作 XGROUP DESTROY 而消失。若只把它当成普通读取错误，
+// worker 会永远循环报错，所有总结任务静默卡死——没有可观测的失败，
+// 只有日志里反复出现的同一条错误。
+func IsNoGroupError(err error) bool {
+	return redis.HasErrorPrefix(err, "NOGROUP")
+}
+
 // DeliveryCount 返回某条未确认消息已被投递的次数。
 //
 // 用它而不是报告行里的 attempt_count 来判断重试次数：报告计数器只在
