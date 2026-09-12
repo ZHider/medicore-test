@@ -677,10 +677,12 @@ nub run backend:bench:integration    # 真实 MySQL/Redis：分页、号源（�
 
 ### 数据竞争检测
 
-```bash
-nub run backend:race                    # 走 Docker 里的 Linux 工具链
-nub run backend:race ./internal/service/...
-GO_IMAGE=golang:1.27.1-alpine nub run backend:race    # 换镜像
+```powershell
+# ⚠️ Windows 上**必须用 Git Bash 的 bash**，不能用 PATH 上那个
+& "C:\Program Files\Git\bin\bash.exe" backend/scripts/race.sh
+& "C:\Program Files\Git\bin\bash.exe" backend/scripts/race.sh ./internal/service/...
+# 换镜像：
+$env:GO_IMAGE='golang:1.27.1-alpine'; & "C:\Program Files\Git\bin\bash.exe" backend/scripts/race.sh
 ```
 
 本机（Windows）没有 C 编译器，`go test -race` 需要 cgo 跑不了；脚本用 Docker 补上。
@@ -696,6 +698,24 @@ CI 的 ubuntu runner 自带 gcc，那边是直接跑的。
 默认用 Debian：开箱即用且快一倍多（alpine 慢在那条无法缓存的 `apk add` 上）。
 alpine 的唯一好处是与部署镜像同一 libc —— 但本脚本跑的是单元测试（依赖全是内存 fake），
 这个差异无关紧要。详见 `docs/HANDOVER.md` §2.9-D。
+
+#### ⛔ 判据：不要只看退出码
+
+这个脚本**曾经静默"通过"** —— `nub run backend:race` 1 秒返回、退出码 0、零行测试输出，
+而 35 秒的 `-race` 根本没跑。见 `docs/HANDOVER.md` §2.10 / `docs/FIXES.md` H3。
+
+现在脚本有三道防护（路径无条件转换 / 内容预检 / 输出兜底），
+把"什么都没做"变成 **exit 1**。但**正规判据仍然是**：
+
+```
+约 36 秒、24 个包结果行（`ok` 或 `? ... [no test files]`）、无 DATA RACE
+```
+
+**秒回 = 没跑，别采信**，无论退出码是什么。
+
+> 顺带两条环境事实：PATH 上的 `bash` 是 **WSL 启动器**（本机无 WSL 发行版，直接报
+> `execvpe(/bin/bash) failed`）；而 `nub run <script>` 用的又**不是** Git Bash
+> （`uname -s` 报 `Windows_NT`）。所以脚本里不要按 `uname` 判断平台行为。
 
 ### 集成测试（`test/integration`）
 

@@ -61,7 +61,8 @@
 | **补测** | `dddd194` | **针对关键路径补测**（见 §2.8）：直测 repository 层的 Lua/SQL 不变量、限流与令牌撤销、纯逻辑判定；并修掉一个 40% 概率失败的 flaky 用例 |
 | **基建** | `ecaa04c` | **CI / fuzz / benchmark / race**（见 §2.9）：六道 CI 关卡；11 个 fuzz 目标（**找出 2 个真实缺陷**）；`docs/benchmark/` 成型；Docker 里跑通 `-race`；并修掉一个夹具生成器引起的 flaky |
 | **收官** | `2a0595f` | **文档固化**：新增 `docs/FIXES.md`（缺陷与改进总账 + 健康指标）与 `docs/PITFALLS.md`（易错点总索引 + 诊断判据）；全量同步各文档指标 |
-| **本轮** | 本次提交 | **后端收尾交付物**：`docs/sql-optimization.md`（25 条查询的 EXPLAIN/EXPLAIN ANALYZE 实测 + 3 组 `IGNORE INDEX` 反向验证）；`.golangci.yml`（v2 格式，**实测 0 issues**）+ `nub run backend:lint` + 进 CI；顺带修掉 11 条 ST* 文档缺口；三角色横切复查补齐（患者/管理员**无新缺口**） |
+| **收尾①** | `edffa4e` | **后端交付物补齐**：`docs/sql-optimization.md`（25 条查询的 EXPLAIN/EXPLAIN ANALYZE 实测 + 3 组 `IGNORE INDEX` 反向验证）；`.golangci.yml`（v2 格式，**实测 0 issues**）+ `nub run backend:lint` + 进 CI；顺带修掉 11 条 ST* 文档缺口；三角色横切复查补齐（患者/管理员**无新缺口**） |
+| **本轮** | 本次提交 | **release gate 抓到一个静默缺陷**（见 §2.10）：`race.sh` 曾在 `nub run` 路径下"返回成功、但什么都没跑"。修路径分支 + 内容预检 + 输出兜底三处，并跑通 `-race` 与 fuzz 全目标 |
 
 ### 1.2 关键交付物
 
@@ -618,6 +619,66 @@ fmt.Sprintf("IT%d", time.Now().UnixNano()%100000)   // 只有 10 万种取值
 > 指向**建数据**（`insertAndLastID` / `seed*`）→ 夹具问题。
 > 后者不要改用例，要改生成器——而且不要用随机数，用计数器。
 
+### 2.10 收尾跑 release gate 时抓到的静默缺陷（`race.sh`）
+
+这是本项目第一次出现**"返回成功，但什么都没做"**这一类错误，
+也是唯一一类**不改变任何测试结果**的错误。
+
+#### 怎么发现的
+
+跑 `nub run backend:race`，**1 秒返回、退出码 0**。
+而同一份代码在 Git Bash 下直跑要 36 秒。
+
+第一反应是"缓存热了所以快"，但那不对：`-race` 的结果要逐包打印
+（`ok ...` / `? ... [no test files]`），**而这里输出零行**。
+
+**判据：35 秒的活儿 1 秒干完、且没有产出 —— 先怀疑它没干。**
+
+#### 用 `bash -x` 看到的真相
+
+```
++ docker run --rm -v D:/Hider/Code/MediCore/backend:/app -v 'C:\Users\...\pkg\mod:/go/pkg/mod' ...
+（到这里直接结束，退出 0）
+```
+
+两个独立的坑叠在一起：
+
+| # | 坑 | 根因 |
+|---|---|---|
+| 1 | 路径分支走错 | 脚本用 `case "$(uname -s)" in MINGW*\|MSYS*\|CYGWIN*)` 判断要不要做 Windows→POSIX 转换。而 **nub 执行 package.json 脚本时用的不是 Git Bash**（实测 `uname -s` = `Windows_NT`、`pwd` = `D:/...`），于是走了"原样"分支 |
+| 2 | 预检拦不住 | 我加的第一版预检只验证"容器起得来、挂载看得见"。它**通过了**，然后主 `docker run` 依旧零输出、1 秒、退出 0 |
+
+#### 修法（三处，缺一不可）
+
+1. **路径转换不再依赖 `uname`** —— 无条件转换（对已转换的路径幂等）。
+   顺带发现 GNU sed 的 `\L` 在那个环境里被当成字面量，产出 `/LD/Hider/...`
+   —— 改用 `tr` + 参数展开，只小写盘符。
+2. **内容预检**：`/app/go.mod` 第一行必须是 `module*`，否则大声失败。
+   判据刻意用**内容**而非退出码 —— 走不通时 docker 恰恰返回 0 且无输出。
+   （反向验证过：`GO_IMAGE=no-such-image:v0` → exit 1 + 明确报错。）
+3. **输出兜底**：主运行改用 `tee` 落日志，**零行即 exit 1**。
+   `go test` 至少会为每个包打一行，一行都没有就说明压根没跑。
+
+修完后：Git Bash 直跑 **36 秒 / 24 个包结果行 / 无 `DATA RACE`**；
+`nub run backend:race` 从"静默通过"变成 **exit 1 + 明确的排查提示**。
+
+#### 顺带发现的环境事实（两条，都会坑人）
+
+- **PATH 上的 `bash` 是 WSL 启动器**（`C:\WINDOWS\system32\bash.exe`），
+  本机没装 WSL 发行版，直接报 `execvpe(/bin/bash) failed`。
+  可用的在 `C:\Program Files\Git\bin\bash.exe`。
+- **`nub run <script>` 用的不是 Git Bash**，`uname -s` 报 `Windows_NT`。
+
+#### 为什么这一类必须单独记
+
+前面 9 类错误都会以"编译失败"或"测试变红"暴露。这一类不会 ——
+**所有测试照旧全绿，只有"证据的可信度"被掏空。**
+而且它天然符合预期：本来就期望"没发现竞争"，而"什么都没跑"恰好也是"没发现竞争"。
+
+**推广：任何检测类命令（race / fuzz / lint / vuln）都要问一句
+"如果它什么都没做，我会看出来吗？"** 看不出来就得加产出断言。
+详见 `docs/PITFALLS.md` §11 第 6 类。
+
 ---
 
 ## 三、还没做的工作
@@ -756,11 +817,20 @@ nub run backend:lint                   # golangci-lint，应为 0 issues
 nub run backend:test                   # 251 个用例通过
 nub run backend:test:integration       # 60 个用例通过
 nub run backend:vuln                   # No vulnerabilities found
-nub run backend:fuzz                   # 11 个 fuzz 目标，各 30s
 nub run backend:bench                  # 纯内存基准
+
+# ⚠️ 下面两条**必须走 Git Bash**，不能用 PATH 上那个 bash（那是 WSL 启动器，见 §2.10）
+$bash = "C:\Program Files\Git\bin\bash.exe"
+& $bash backend/scripts/fuzz.sh 30s    # 11 个 fuzz 目标，各 30s
+& $bash backend/scripts/race.sh        # 数据竞争检测，应约 36s、24 个包结果行
 ```
 
-**当前预期结果**：全部通过，漏洞 0，集成测试 60/60，单元测试 240/240，lint 0 issues。
+**当前预期结果**：全部通过，漏洞 0（可达 0，另有 1 项上游无修复且未调用），
+集成测试 60/60，单元测试 240/240，lint 0 issues，`-race` 未检出竞争，fuzz 全目标通过。
+
+> **`race.sh` 的判据不要只看退出码**：它曾经静默"通过"（1 秒、退出 0、零输出）。
+> 现在脚本自带输出兜底会把它变成 exit 1，但**正规判据是"约 36 秒 + 24 个包结果行"** ——
+> 秒回就是没跑，别采信。详见 §2.10。
 
 深一层的静态检查：
 

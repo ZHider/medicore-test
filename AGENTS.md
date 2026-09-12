@@ -255,7 +255,7 @@ worker → XREADGROUP → 抢占 → LLM 总结 → Schema 校验 → 失败重�
 | `nub run backend:fuzz` / `backend:fuzz:long` | 对全部 fuzz 目标各跑 30s / 5m |
 | `nub run backend:bench` | 纯内存基准（审计写入、JWT） |
 | `nub run backend:bench:integration` | 真实 MySQL/Redis 基准（分页、号源），需先起依赖 |
-| `nub run backend:race` | 数据竞争检测（走 Docker，见 §5.10） |
+| `nub run backend:race` | 数据竞争检测（走 Docker）。**结论以 Git Bash 直跑为准，见 §5.10.1** |
 | `nub run backend:seed` | 灌入演示数据（幂等） |
 | `nub run backend:loadtest` | 并发超卖压测 |
 | `nub run frontend:dev` / `build` / `typecheck` / `lint` | 前端 |
@@ -400,8 +400,46 @@ NAT/出口问题，不是代码问题，也不该用"配个代理"来解决。
 
 另一个坑（脚本已处理）：Git Bash 会把 `-w /app` 改写成 Windows 路径，需要 `MSYS_NO_PATHCONV=1`。
 
-**实测**：Debian 镜像跑全量 `./internal/...`，未检出数据竞争。
+**实测**：Debian 镜像跑全量 `./internal/...`，未检出数据竞争（36 秒，24 个包结果行）。
 build cache 按镜像名分卷存放 —— 不同 libc 的产物缓存键不同，混用只会白等重编译。
+
+#### 5.10.1 `race.sh` 曾经静默"通过"（**本轮抓到的真缺陷**）
+
+收尾跑 release gate 时，`nub run backend:race` **1 秒返回、退出码 0、没有任何测试输出**。
+用 `bash -x` 才看出真相。两个独立的坑叠在一起：
+
+| # | 坑 | 表现 |
+|---|---|---|
+| 1 | 脚本按 `uname -s` 分支决定要不要把 Windows 路径转成 POSIX 形式 | nub 执行脚本时用的**不是 Git Bash**（实测 `uname -s = Windows_NT`、`pwd = D:/...`），于是走了"原样"分支，把 `D:/...` 与 `C:\Users\...` 直接丢给 docker |
+| 2 | 预检只证明"容器起得来、挂载看得见" | 拦不住**主运行被静默吞掉**：预检通过后，主 `docker run` 仍然零输出、1 秒、退出 0 |
+
+**修了三处，缺一不可**：
+
+1. **路径转换不再依赖 `uname`** —— 直接无条件转换（对已转换的路径幂等）。
+   顺带去掉 GNU sed 的 `\L`：它在那个环境里被当成字面量，产出了 `/LD/Hider/...`。
+2. **加内容预检**（`/app/go.mod` 第一行必须是 `module*`），把"没挂上"变成大声失败。
+   判据刻意用**内容**而不是退出码 —— 走不通时 docker 恰恰返回 0 且无输出。
+3. **加输出兜底**：主运行用 `tee` 落一份日志，**零行即 exit 1**。
+   `go test` 至少会为每个包打一行（`ok` / `?`），一行都没有就说明压根没跑。
+
+**为什么值得单独记一条**：这个缺陷的形态是
+**"返回成功、但什么都没做"**，它比"跑失败"危险得多 ——
+跑失败会让人去查，静默成功会让人以为并发问题已经排查过了。
+而且它不影响任何测试，只影响**证据的可信度**，属于最难被发现的那一类。
+
+**当前用法（Windows）**：
+
+```powershell
+# ✅ 用 Git Bash 的 bash，不是 PATH 上那个
+& "C:\Program Files\Git\bin\bash.exe" backend/scripts/race.sh
+```
+
+PATH 上的 `bash` 是 `C:\WINDOWS\system32\bash.exe`，即 **WSL 启动器**；
+本机没装 WSL 发行版，直接报
+`WSL ERROR: CreateExecutableCommon: execvpe(/bin/bash) failed: No such file or directory`。
+
+**裁决**：`-race` 的结论以 Git Bash 直跑为准 —— 实测 36 秒、24 个包结果行、无 `DATA RACE`。
+`nub run backend:race` 现在会**大声失败**而不是静默通过，但它的结果不作为证据。
 
 ### 5.11 等待条件比断言落后一步 = 偶发失败
 
