@@ -195,7 +195,8 @@ MediCore/
 │   │   └── apperr/ authctx/ errcode/ jwt/ logger/ mask/
 │   │       metrics/ response/ secret/ traceid/     # 无状态工具包
 │   └── test/integration/    # HTTP 集成测试（-tags=integration）
-├── frontend/                # Vue3 + TS 5.9 脚手架（未开发页面）
+├── frontend/                # Vue3 + TS 5.9 脚手架（**未开发页面**）
+│   └── AGENTS.md            # ★ **给前端 agent 的交接文档**（接口契约 / 陷阱 / 验收标准）
 ├── deploy/compose.dev.yml   # 本地依赖服务
 └── package.json             # 统一任务入口（nub run）
 ```
@@ -591,7 +592,7 @@ v1 用 `linters-settings` / `issues.exclude-rules`，v2 用 `version: "2"` +
 
 | 优先级 | 项 | 说明 |
 |---|---|---|
-| **高** | 前端页面 | 仅有脚手架。spec §8 要求登录/挂号/AI 对话/医生工作台/管理看板（后端接口已全部就绪） |
+| **高** | 前端页面 | 仅有脚手架。spec §8 要求登录/挂号/AI 对话/医生工作台/管理看板（后端接口已全部就绪）。**接手前先读 `frontend/AGENTS.md`** —— 里面是接口契约、22 条陷阱与验收标准 |
 | **高** | 全栈 compose 编排 | 目前只有依赖服务的 compose，缺 nginx + 前后端镜像 |
 | 中 | AI Vibe Coding 交付物 | **后端部分已完成**：`docs/ai-vibe-coding/`（WORKFLOW + prompts + **6 篇**逐模块 review，覆盖 M1–M6）。**遗留**：前端还没有页面，因此没有前端 review；review 的"遗留与未验证"节里记的缺口见各篇 §六 |
 | 中 | 性能证据文档 | `docs/benchmark/`（17 项基准）与 `docs/sql-optimization.md`（25 条查询实测 + 索引反向验证）**均已成型**。遗留：`sql-optimization.md` §4.4 记的 cron 扫描优化（当前代价可接受，触发条件已写明） |

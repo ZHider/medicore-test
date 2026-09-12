@@ -687,7 +687,7 @@ fmt.Sprintf("IT%d", time.Now().UnixNano()%100000)   // 只有 10 万种取值
 
 | 项 | 现状 | spec 依据 |
 |---|---|---|
-| **前端页面** | 仅有 create-vue 脚手架（`App.vue` 还是模板） | §8 要求登录/挂号/AI 对话/医生工作台/管理看板 |
+| **前端页面** | 仅有 create-vue 脚手架（`App.vue` 还是模板） | §8 要求登录/挂号/AI 对话/医生工作台/管理看板。**交接文档已就绪：`frontend/AGENTS.md`**（接口契约 / 22 条陷阱 / 验收标准 / TS 类型约定） |
 | **全栈 compose 编排** | 只有 `deploy/compose.dev.yml`（依赖服务），缺 nginx + 前后端镜像 | §11.2、G5「一键起全栈」 |
 
 ### 3.2 中优先级
