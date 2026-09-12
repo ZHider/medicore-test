@@ -1,0 +1,8 @@
+# 前端构建上下文：只保留构建所需内容。
+# node_modules 可达成百 MB，是最关键的一条（必须保留，否则每次 build 都极慢）。
+node_modules
+dist
+.git
+.gitignore
+.vscode
+*.log

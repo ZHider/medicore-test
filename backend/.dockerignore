@@ -1,0 +1,11 @@
+# 构建上下文保持最小（KISS）：只排除绝不参与编译的产物。
+# 注意：Dockerfile 用的是白名单式 COPY，因此这里主要防止本地产物混入。
+.git
+.gitignore
+*.exe
+bin/
+dist/
+coverage.out
+*.log
+.env
+.env.*

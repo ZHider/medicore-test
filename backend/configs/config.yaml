@@ -1,0 +1,45 @@
+app:
+  name: medicore
+  env: dev          # dev / prod；prod 下 gin 切换 ReleaseMode
+  port: 8080
+
+log:
+  level: info       # debug / info / warn / error
+
+mysql:
+  host: 127.0.0.1
+  port: 3306
+  user: medicore
+  password: ""      # 生产环境用 MEDICORE_MYSQL_PASSWORD 覆盖，不要写进文件
+  database: medicore
+  max_open_conns: 50
+  max_idle_conns: 10
+  conn_max_lifetime: 1h
+
+redis:
+  addr: 127.0.0.1:6379
+  password: ""      # 生产环境用 MEDICORE_REDIS_PASSWORD 覆盖
+  db: 0
+  pool_size: 20
+
+# ============================================================================
+# 密钥一律不写入仓库。
+#
+# 开发环境：运行 `go run ./cmd/genlocal` 生成 configs/config.local.yaml，
+#           该文件已被 .gitignore 排除，程序启动时会自动合并它。
+# 生产环境：通过环境变量注入
+#           MEDICORE_SECURITY_AES_KEY / _PHONE_PEPPER / _JWT_SECRET
+#
+# 这三个值一旦泄露的后果：
+#   aes_key      泄露 -> 全部病历与手机号明文泄露
+#   phone_pepper 泄露 -> 可用彩虹表反推手机号
+#   jwt_secret   泄露 -> 可伪造任意用户（含管理员）的令牌
+# ============================================================================
+security:
+  aes_key: ""
+  phone_pepper: ""
+  jwt_secret: ""
+  jwt_issuer: medicore
+  access_token_ttl: 2h      # spec §2.2
+  refresh_token_ttl: 168h   # 7 天
+  bcrypt_cost: 10           # 不得低于 10

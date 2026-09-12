@@ -1,0 +1,14 @@
+# 统一以 LF 存入仓库。
+# 开发在 Windows、运行在 Linux 容器，若不做归一化，
+# 每次跨平台操作都会产生整文件的行尾变更噪音。
+* text=auto eol=lf
+
+# 二进制文件不做行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary

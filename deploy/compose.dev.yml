@@ -1,0 +1,52 @@
+# 本地开发依赖服务。
+#
+# 与交付用 compose 的区别：这里把端口映射到宿主机，方便本机 go run / 调试器直连。
+# 交付用 compose 按 spec §11.2 不映射 mysql/redis 端口（仅内部网络）。
+#
+# 用法：docker compose -f deploy/compose.dev.yml up -d
+# 首次启动会自动执行 docs/schema.sql 初始化表结构（仅在数据卷为空时）。
+
+name: medicore-dev
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: medicore-dev-mysql
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: medicore
+      MYSQL_USER: medicore
+      MYSQL_PASSWORD: medicore123
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ../docs/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-prootpass"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: medicore-dev-redis
+    # appendonly 保证 Redis 重启不丢号源缓存与 Stream 队列（spec §7.1 补偿机制的前提）
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  mysql-data:
+  redis-data:

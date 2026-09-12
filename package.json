@@ -1,0 +1,32 @@
+{
+  "name": "medicore",
+  "private": true,
+  "version": "0.1.0",
+  "description": "MediCore 医疗数据中台与 AI 预问诊平台 —— 统一任务入口（替代 Makefile）",
+  "scripts": {
+    "deps:up": "docker compose -f deploy/compose.dev.yml up -d",
+    "deps:down": "docker compose -f deploy/compose.dev.yml down",
+    "deps:reset": "docker compose -f deploy/compose.dev.yml down -v",
+
+    "backend:dev": "cd backend && go run ./cmd/server",
+    "backend:build": "cd backend && go build ./...",
+    "backend:vet": "cd backend && go vet ./...",
+    "backend:fmt": "cd backend && gofmt -l -w ./cmd ./internal",
+    "backend:test": "cd backend && go test ./...",
+
+    "frontend:dev": "nub --cwd frontend run dev",
+    "frontend:build": "nub --cwd frontend run build",
+    "frontend:typecheck": "nub --cwd frontend run typecheck",
+    "frontend:lint": "nub --cwd frontend run lint",
+
+    "lint": "nub run backend:vet && nub run frontend:lint",
+    "test": "nub run backend:test"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "nub",
+      "version": "^0.9.0",
+      "onFail": "ignore"
+    }
+  }
+}

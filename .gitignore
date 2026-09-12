@@ -1,0 +1,40 @@
+# 依赖（nub 的 isolated store 体积很大，绝不入库）
+node_modules/
+.store/
+
+# 构建产物
+dist/
+dist-ssr/
+*.exe
+backend/bin/
+
+# 本地配置与密钥：一律不进仓库。
+# config.local.yaml 由 `go run ./cmd/genlocal` 生成。
+.env
+.env.*
+!.env.example
+*.local
+*.local.yaml
+*.local.yml
+config.local.*
+
+# 日志
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# 测试与覆盖率
+coverage.out
+*.cover
+
+# 编辑器与系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.suo
+*.sw?
+
+# Go
+vendor/
