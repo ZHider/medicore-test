@@ -350,17 +350,16 @@ func TestLoop_ConsumesQueuedMessages(t *testing.T) {
 	require.NoError(t, w.Start())
 	defer w.Stop()
 
-	deadline := time.After(2 * time.Second)
-	for {
-		if s.callCount() > 0 {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("消费循环没有处理队列中的任务")
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
+	// 必须等待**最后**一个可观察状态（确认完成），而不是中间状态。
+	//
+	// handle 的顺序是 SummarizeReport → Ack：若只等 s.callCount() > 0，
+	// 测试可能在 worker 还没执行 Ack 时就往下走，于是 ackCount() 读到 0 ——
+	// 表现为大约每十次失败一次的 flaky，而不是每次必现。
+	require.Eventually(t, func() bool { return q.ackCount() > 0 },
+		2*time.Second, 5*time.Millisecond,
+		"消费循环没有处理并确认队列中的任务")
+
+	assert.Equal(t, 1, s.callCount())
 	assert.Equal(t, 1, q.ackCount())
 }
 

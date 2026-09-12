@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/mysql"
@@ -458,6 +459,22 @@ func mustDB(t *testing.T) *gorm.DB {
 	db, err := gorm.Open(mysql.Open(testDSN()), &gorm.Config{})
 	require.NoError(t, err)
 	return db
+}
+
+// mustRedis 返回指向测试 Redis DB（DB 1）的客户端。
+//
+// 供 repository 层的直连测试使用：号源、幂等键这些机制的真实语义
+// 只存在于 Lua 脚本里，用 fake 测不出来。连接由 t.Cleanup 自动关闭。
+func mustRedis(t *testing.T) *redis.Client {
+	t.Helper()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     testConfig.Redis.Addr,
+		Password: testConfig.Redis.Password,
+		DB:       testRedisDB,
+	})
+	t.Cleanup(func() { _ = rdb.Close() })
+	return rdb
 }
 
 // waitForAudit 轮询等待一条符合条件的审计记录落库。

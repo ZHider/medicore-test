@@ -80,7 +80,7 @@ type stockStore interface {
 
 **带来三个好处**：
 
-1. **可测试**：service 单测注入内存 fake，228 个用例秒级跑完，不需要 MySQL/Redis。
+1. **可测试**：service 单测注入内存 fake，240 个用例秒级跑完，不需要 MySQL/Redis。
 2. **耦合可见**：接口就是 service 到底用了哪些能力的清单。
 3. **接口保持最小**：`appointmentJanitor` 只声明 `ListExpiredPending` + `Expire`，
    定时任务不必实现 `appointmentStore` 的全部 7 个方法。
@@ -413,8 +413,13 @@ Zap JSON，字段 `trace_id / method / path / status / latency_ms / client_ip / 
 
 | 层 | 数量 | 运行 | 覆盖 |
 |---|---|---|---|
-| 单元 | 228 | `nub run backend:test` | service 核心状态机、工具包、worker 决策 |
-| 集成 | 37 | `nub run backend:test:integration` | 全部 29 个端点的行为、RBAC、审计 |
+| 单元 | 240 | `nub run backend:test` | service 核心状态机、工具包、worker 决策、纯逻辑判定 |
+| **repository 直测** | （含在集成内） | `nub run backend:test:integration` | **真实 SQL / Lua 的不变量**：号源、幂等键、超时释放、签到、令牌 |
+| 集成 | 60 | `nub run backend:test:integration` | 全部 29 个端点的行为、RBAC、审计、限流 |
+
+**三层而不是两层**：fake 里一行 Go 代码就实现的行为，在 Lua 脚本和带条件的
+UPDATE 里是完全不同的语义。超卖、重复回补、幂等失效这三类问题
+**只存在于 repository 层**，端到端测试能发现"表现不对"但很难指出是哪条语句错了。
 
 **集成测试复用 `app.Build()` 的同一套装配**，因此覆盖真实中间件顺序与依赖注入。
 用独立数据库 `medicore_test` 与 Redis DB 1，由 `deploy/mysql/init-test-db.sql` 创建。
@@ -424,14 +429,21 @@ Zap JSON，字段 `trace_id / method / path / status / latency_ms / client_ip / 
 | 包 | 覆盖率 | 评价 |
 |---|---|---|
 | `mask` / `audit` / `mockhis` / `jwt` / `worker` / `llm` / `prompts` / `secret` | 88–100% | ✅ |
-| `service` | 76.4% | ✅ 核心价值所在 |
-| `model` | 48.8% | 可接受 |
-| **`repository`** | **4.9%** | ⚠️ 约 1700 行 SQL 主要靠集成测试保障 |
+| `service` | 79.5% | ✅ 核心价值所在 |
+| `model` | 55.8% | 可接受 |
+| **`repository`** | **6.4%（口径假象）** | ⚠️ 见下方说明 |
 | **`handler`** | **0%（单元）** | ⚠️ 但集成测试覆盖了全部端点行为 |
 
-**整体 33.0%，但这个数字低估了实际保障**：spec §11.1 要求的是"覆盖 service 层核心逻辑"，
-而 service 达到 76.4%。真实盲区是 repository 的 SQL 细节（游标分页边界、
-软删除条件遗漏、`RowsAffected` 分支）。
+**整体 34.1%，但这个数字低估了实际保障**：spec §11.1 要求的是"覆盖 service 层核心逻辑"，
+而 service 达到 79.5%。
+
+> ⚠️ **`repository` 的 6.4% 是按包统计的假象。** 集成测试是独立包，
+> `go test ./...` 的 profile 不合并它的执行。用 `-coverpkg` 单独统计集成测试：
+> **`repository` 实际 66.8%**、`service` 62.4%、`handler` 76.6%。
+> 报覆盖率时必须说清口径，否则会得出"数据访问层几乎没测"的错误结论。
+
+真实盲区是 repository 中**缓存命中路径**与**目录只读查询**这些非关键分支，
+而关键不变量（号源、幂等、释放闸门、令牌）现在都有直测。
 
 **静态检查**（`go vet` / `staticcheck` / `deadcode`）三者均为 0 告警。
 `go test -race` 在本机不可用（缺 cgo 所需的 C 编译器），详见 `HANDOVER.md` §2.7-G。
