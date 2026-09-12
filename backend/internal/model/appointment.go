@@ -47,7 +47,17 @@ func (Appointment) TableName() string { return "appointments" }
 
 // IsActive 判断预约是否仍占用号源。
 func (a *Appointment) IsActive() bool {
-	return a.Status == AppointmentStatusPending || a.Status == AppointmentStatusConfirmed
+	return IsActiveAppointmentStatus(a.Status)
+}
+
+// IsActiveAppointmentStatus 判断某个预约状态是否仍占用号源。
+//
+// 单独暴露一个以状态字符串为参数的版本，是因为多处拿到的是 DTO 里的 status
+// 字符串而不是 *Appointment（例如预问诊的状态校验）。
+// 若各写一份条件，将来新增状态（比如"改期中"）时必然漏改其中一处，
+// 而那处漏改的表现是"号源被占着但状态看起来已经结束"，极难排查。
+func IsActiveAppointmentStatus(status string) bool {
+	return status == AppointmentStatusPending || status == AppointmentStatusConfirmed
 }
 
 // GrabRequest 是抢号请求。

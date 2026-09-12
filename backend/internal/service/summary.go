@@ -63,9 +63,11 @@ func (v *SummaryValidator) Validate(raw string) error {
 // 每次校验都通过，于是降级路径永不触发，垃圾数据被当成结构化结果入库——
 // 而且没有任何报错。这个自检把"静默失效"变成"启动即失败"。
 func (v *SummaryValidator) SelfCheck() error {
-	// 空对象必定缺少我们的必填字段，正常应当被拒绝
+	// 空对象必定缺少我们的必填字段，正常应当被拒绝。
+	// 错误文案首字母小写：静态检查（ST1005）要求 error 字符串不以大写开头，
+	// 因为它通常会被包装进别的句子中间。
 	if err := v.Validate(`{}`); err == nil {
-		return errors.New("Schema 过于宽松：空对象也能通过校验，说明必填约束缺失，校验形同虚设")
+		return errors.New("schema 过于宽松：空对象也能通过校验，说明必填约束缺失，校验形同虚设")
 	}
 	return nil
 }

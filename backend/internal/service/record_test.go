@@ -26,7 +26,6 @@ type fakeRecordStore struct {
 	createErr    error
 	viewErr      error
 	doctorIDByU  map[uint64]uint64
-	doctorIDErr  error
 	lastListKind string
 }
 

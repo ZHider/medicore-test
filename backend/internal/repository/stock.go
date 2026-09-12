@@ -75,7 +75,11 @@ end
 
 local current = redis.call('INCRBY', key, qty)
 if current > cap then
-  redis.call('SET', key, cap)
+  -- 必须 KEEPTTL：裸 SET 会清掉 EnsureLoaded 用 SETNX 设置的过期时间，
+  -- 号源键就此变成永不过期的键，而 SETNX 也不会再刷新它。
+  -- 对历史排班而言更糟——ListReconcilable 只扫 sched_date >= today，
+  -- 这个被永久钉住的错值再也不会被对账修正。
+  redis.call('SET', key, cap, 'KEEPTTL')
   current = cap
 end
 return current

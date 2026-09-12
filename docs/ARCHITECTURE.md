@@ -80,7 +80,7 @@ type stockStore interface {
 
 **带来三个好处**：
 
-1. **可测试**：service 单测注入内存 fake，218 个用例秒级跑完，不需要 MySQL/Redis。
+1. **可测试**：service 单测注入内存 fake，228 个用例秒级跑完，不需要 MySQL/Redis。
 2. **耦合可见**：接口就是 service 到底用了哪些能力的清单。
 3. **接口保持最小**：`appointmentJanitor` 只声明 `ListExpiredPending` + `Expire`，
    定时任务不必实现 `appointmentStore` 的全部 7 个方法。
@@ -349,7 +349,7 @@ phone_hash   CHAR(64)         HMAC-SHA256(pepper, phone)，ASCII + ascii_bin
 | | GET | `/api/v1/appointments` | patient（游标分页） |
 | | POST | `/api/v1/appointments/:id/cancel` | patient |
 | | POST | `/api/v1/appointments/:id/checkin` | patient |
-| | GET | `/api/v1/schedules/:id/queue` | doctor / admin |
+| | GET | `/api/v1/schedules/:id/queue` | doctor / admin（**service 层校验排班归属**） |
 | **医生工作台** | GET | `/api/v1/doctor/appointments` | doctor / admin（游标分页，`date`/`status` 筛选） |
 | **AI** | POST | `/api/v1/appointments/:id/preconsult/chat` | patient（**SSE**） |
 | | GET | `/api/v1/appointments/:id/preconsult/history` | patient |
@@ -375,10 +375,14 @@ phone_hash   CHAR(64)         HMAC-SHA256(pepper, phone)，ASCII + ascii_bin
 ### 5.1 TraceID 贯通
 
 入口生成 32 位十六进制（或沿用上游 `X-Trace-Id`），写入：
-**context → 响应头 → 响应体 → 日志 → 审计表**。
+**context → 响应头 → 响应体 → 日志 → 审计表 → 同步记录**。
 
 > 曾有一个 bug：202 响应直接构造 `response.Body` 漏掉了 `trace_id`，
 > 导致该请求在日志与审计里断链。已加 `response.Accepted` helper 修正。
+>
+> `sync_logs.trace_id` 也曾是"有列但从不写入"（永远 NULL）。现已接上：
+> 手动触发同步时能把同步记录与同一次请求的审计串联起来；
+> cron 触发没有 TraceID，落库为 NULL。
 
 ### 5.2 指标清单
 
@@ -409,8 +413,8 @@ Zap JSON，字段 `trace_id / method / path / status / latency_ms / client_ip / 
 
 | 层 | 数量 | 运行 | 覆盖 |
 |---|---|---|---|
-| 单元 | 218 | `nub run backend:test` | service 核心状态机、工具包、worker 决策 |
-| 集成 | 31 | `nub run backend:test:integration` | 全部 29 个端点的行为、RBAC、审计 |
+| 单元 | 228 | `nub run backend:test` | service 核心状态机、工具包、worker 决策 |
+| 集成 | 37 | `nub run backend:test:integration` | 全部 29 个端点的行为、RBAC、审计 |
 
 **集成测试复用 `app.Build()` 的同一套装配**，因此覆盖真实中间件顺序与依赖注入。
 用独立数据库 `medicore_test` 与 Redis DB 1，由 `deploy/mysql/init-test-db.sql` 创建。
@@ -419,15 +423,18 @@ Zap JSON，字段 `trace_id / method / path / status / latency_ms / client_ip / 
 
 | 包 | 覆盖率 | 评价 |
 |---|---|---|
-| `mask` / `audit` / `jwt` / `worker` / `llm` / `prompts` / `secret` | 88–100% | ✅ |
-| `service` | 75.9% | ✅ 核心价值所在 |
-| `model` | 50.0% | 可接受 |
-| **`repository`** | **4.8%** | ⚠️ 约 1700 行 SQL 主要靠集成测试保障 |
+| `mask` / `audit` / `mockhis` / `jwt` / `worker` / `llm` / `prompts` / `secret` | 88–100% | ✅ |
+| `service` | 76.4% | ✅ 核心价值所在 |
+| `model` | 48.8% | 可接受 |
+| **`repository`** | **4.9%** | ⚠️ 约 1700 行 SQL 主要靠集成测试保障 |
 | **`handler`** | **0%（单元）** | ⚠️ 但集成测试覆盖了全部端点行为 |
 
-**整体 32.2%，但这个数字低估了实际保障**：spec §11.1 要求的是"覆盖 service 层核心逻辑"，
-而 service 达到 75.9%。真实盲区是 repository 的 SQL 细节（游标分页边界、
+**整体 33.0%，但这个数字低估了实际保障**：spec §11.1 要求的是"覆盖 service 层核心逻辑"，
+而 service 达到 76.4%。真实盲区是 repository 的 SQL 细节（游标分页边界、
 软删除条件遗漏、`RowsAffected` 分支）。
+
+**静态检查**（`go vet` / `staticcheck` / `deadcode`）三者均为 0 告警。
+`go test -race` 在本机不可用（缺 cgo 所需的 C 编译器），详见 `HANDOVER.md` §2.7-G。
 
 ### 6.3 反向验证过的测试
 

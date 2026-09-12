@@ -68,7 +68,12 @@ func (r *ConversationRepo) List(ctx context.Context, appointmentID uint64) ([]ll
 	for i, raw := range raws {
 		var msg llm.Message
 		if err := json.Unmarshal([]byte(raw), &msg); err != nil {
-			// 单条损坏不影响其余内容，跳过并留痕即可
+			// 单条损坏时**整体失败**，而不是跳过这一条。
+			//
+			// 这里的取舍与"可用性优先"的直觉相反，是有意的：对话内容是患者的
+			// 主诉与症状描述，静默丢掉一条会让 AI 总结基于不完整的信息给出结论，
+			// 而调用方无从察觉。失败至少让问题暴露出来。
+			// （此前的注释写着"跳过并留痕即可"，与实现相反，已改正。）
 			return nil, fmt.Errorf("unmarshal conversation message #%d: %w", i, err)
 		}
 		messages = append(messages, msg)

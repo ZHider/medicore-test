@@ -163,14 +163,14 @@ type recordStore interface {
 type syncStore interface {
 	UpsertDepartment(ctx context.Context, dept model.Department) error
 	FindDepartmentIDByCode(ctx context.Context, code string) (uint64, error)
-	UpsertDoctor(ctx context.Context, in repository.SyncDoctorInput, departmentID uint64, isPrimary bool) (uint64, error)
+	UpsertDoctor(ctx context.Context, in repository.SyncDoctorInput, departmentID uint64, isPrimary bool) error
 	FindDoctorIDByExternalID(ctx context.Context, externalID string) (uint64, error)
-	UpsertSchedule(ctx context.Context, in model.Schedule, externalID string) (bool, error)
+	UpsertSchedule(ctx context.Context, in model.Schedule, externalID string) error
 }
 
 // syncLogStore 是同步记录能力。
 type syncLogStore interface {
-	Start(ctx context.Context, source, trigger string) (uint64, error)
+	Start(ctx context.Context, source, trigger, traceID string) (uint64, error)
 	Finish(ctx context.Context, id uint64, result repository.SyncResult) error
 	FindViewByID(ctx context.Context, id uint64) (*model.SyncLogView, error)
 	ListByCursor(ctx context.Context, source string, cursor uint64, limit int) ([]model.SyncLogView, error)

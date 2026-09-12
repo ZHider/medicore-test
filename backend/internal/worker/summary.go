@@ -33,6 +33,9 @@ const (
 	maxAttempts = 3
 	// backoffOnError 读取队列出错时的退避，避免 Redis 异常时空转刷日志。
 	backoffOnError = time.Second
+	// recoveryTimeout 是重建消费者组的超时。它必须独立于读取用的 context——
+	// 后者在 Read 返回时已被 cancel，复用它会让重建永远失败。
+	recoveryTimeout = 5 * time.Second
 	// shutdownTimeout 等待当前任务结束的上限。
 	shutdownTimeout = 10 * time.Second
 )
@@ -160,16 +163,14 @@ func (w *SummaryWorker) loop() {
 		default:
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), blockDuration+5*time.Second)
-		msgs, err := w.queue.Read(ctx, w.consumer, readBatch, blockDuration)
-		cancel()
+		msgs, err := w.readOnce()
 
 		if err != nil {
 			// 消费者组消失（Redis 被 flush / 重启未持久化 / 误操作）时必须重建，
 			// 否则这个循环会永远报同一个错，所有总结任务静默卡死。
 			if repository.IsNoGroupError(err) {
 				w.log.Warn("summary consumer group missing, recreating")
-				if gErr := w.queue.EnsureGroup(ctx); gErr != nil {
+				if gErr := w.ensureGroup(); gErr != nil {
 					w.log.Error("recreate summary consumer group failed", zap.Error(gErr))
 					w.sleep(backoffOnError)
 				}
@@ -186,6 +187,27 @@ func (w *SummaryWorker) loop() {
 			w.handle(msg)
 		}
 	}
+}
+
+// readOnce 读一轮队列。
+func (w *SummaryWorker) readOnce() ([]redis.XMessage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), blockDuration+5*time.Second)
+	defer cancel()
+
+	return w.queue.Read(ctx, w.consumer, readBatch, blockDuration)
+}
+
+// ensureGroup 重建消费者组，使用**独立**的 context。
+//
+// 必须独立：读队列用的 context 在 Read 返回后就已经 cancel，
+// 若复用它，XGroupCreateMkStream 会立刻返回 context.Canceled，
+// "重建消费者组"这条恢复路径就永远走不通——而它恰恰是这段代码本要防住的
+// "所有总结任务静默卡死"。这个 bug 曾被单元测试掩盖：当时的 fake 不检查 ctx。
+func (w *SummaryWorker) ensureGroup() error {
+	ctx, cancel := context.WithTimeout(context.Background(), recoveryTimeout)
+	defer cancel()
+
+	return w.queue.EnsureGroup(ctx)
 }
 
 // handle 处理单条任务，并决定确认、重试还是转入死信。

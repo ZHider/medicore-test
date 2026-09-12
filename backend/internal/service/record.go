@@ -51,7 +51,7 @@ func (s *RecordService) Write(
 		return nil, apperr.New(errcode.ErrForbidden, "只有医生可以书写病历")
 	}
 
-	doctorID, err := s.doctorIDOf(ctx, access.UserID)
+	doctorID, err := resolveDoctorID(ctx, s.doctors, access.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -76,17 +76,17 @@ func (s *RecordService) Write(
 		DoctorID:      doctorID,
 		Diagnosis:     strings.TrimSpace(req.Diagnosis),
 	}
-	record.ChiefComplaint = optionalStringPtr(req.ChiefComplaint)
-	record.PresentIllness = optionalStringPtr(req.PresentIllness)
-	record.TreatmentAdvice = optionalStringPtr(req.TreatmentAdvice)
+	record.ChiefComplaint = optionalTrimmedString(req.ChiefComplaint)
+	record.PresentIllness = optionalTrimmedString(req.PresentIllness)
+	record.TreatmentAdvice = optionalTrimmedString(req.TreatmentAdvice)
 
 	items := make([]model.PrescriptionItem, 0, len(req.Prescriptions))
 	for _, p := range req.Prescriptions {
 		items = append(items, model.PrescriptionItem{
 			DrugName:  strings.TrimSpace(p.DrugName),
-			Spec:      optionalStringPtr(p.Spec),
+			Spec:      optionalTrimmedString(p.Spec),
 			Quantity:  p.Quantity,
-			UsageDesc: optionalStringPtr(p.UsageDesc),
+			UsageDesc: optionalTrimmedString(p.UsageDesc),
 			Days:      p.Days,
 		})
 	}
@@ -142,7 +142,7 @@ func (s *RecordService) ListMine(
 	case model.RolePatient:
 		rows, err = s.records.ListByPatientCursor(ctx, access.UserID, cursor, limit)
 	case model.RoleDoctor:
-		doctorID, dErr := s.doctorIDOf(ctx, access.UserID)
+		doctorID, dErr := resolveDoctorID(ctx, s.doctors, access.UserID)
 		if dErr != nil {
 			return empty, dErr
 		}
@@ -175,7 +175,7 @@ func (s *RecordService) authorize(
 		return nil
 
 	case model.RoleDoctor:
-		doctorID, err := s.doctorIDOf(ctx, access.UserID)
+		doctorID, err := resolveDoctorID(ctx, s.doctors, access.UserID)
 		if err != nil {
 			return err
 		}
@@ -189,19 +189,6 @@ func (s *RecordService) authorize(
 	}
 }
 
-// doctorIDOf 由用户 ID 解析医生档案 ID。
-// 病历表存的是 doctors.id，直接拿 users.id 比较会永远不相等。
-func (s *RecordService) doctorIDOf(ctx context.Context, userID uint64) (uint64, error) {
-	doctorID, err := s.doctors.FindIDByUserID(ctx, userID)
-	if errors.Is(err, repository.ErrNotFound) {
-		return 0, apperr.New(errcode.ErrForbidden, "当前账号没有医生档案")
-	}
-	if err != nil {
-		return 0, apperr.Wrap(errcode.ErrInternal, "查询医生档案失败", err)
-	}
-	return doctorID, nil
-}
-
 func (s *RecordService) loadAppointment(ctx context.Context, appointmentID uint64) (*model.Appointment, error) {
 	appt, err := s.appointments.FindByID(ctx, appointmentID)
 	if errors.Is(err, repository.ErrNotFound) {
@@ -211,13 +198,4 @@ func (s *RecordService) loadAppointment(ctx context.Context, appointmentID uint6
 		return nil, apperr.Wrap(errcode.ErrInternal, "查询预约失败", err)
 	}
 	return appt, nil
-}
-
-// optionalStringPtr 把空串转成 nil，避免数据库里存一堆空字符串。
-func optionalStringPtr(s string) *string {
-	trimmed := strings.TrimSpace(s)
-	if trimmed == "" {
-		return nil
-	}
-	return &trimmed
 }

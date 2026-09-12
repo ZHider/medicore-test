@@ -5,10 +5,13 @@
 >
 > 即使模块已完成，这些信息仍然重要——**它们回答"为什么是这样写的"，而这正是重构时最容易改错的地方。**
 
-最后更新：M6 医生工作台补全之后（M1–M6 全部完成；提交历史见 `HANDOVER.md` §1）
+最后更新：全量代码审视之后（M1–M6 全部完成；提交历史见 `HANDOVER.md` §1）
 
 > ⚠️ **端点清单以 `backend/internal/router/router.go` 或 gin 启动输出为准。**
 > 本文档曾把管理端点写成 `/api/v1/audit-logs`（少了 `/admin/` 段），照文档调接口会 404。
+>
+> ⚠️ **本文档记录的是"当前为什么这样写"。** 全量审视修掉的缺陷（队列越权、
+> 审计资源名、HIS 契约倒置等）记在 `HANDOVER.md` §2.7，改代码前值得一并看。
 
 ---
 
@@ -374,7 +377,17 @@ COMMIT;
 **幂等**：已签到的预约直接返回原序号，患者重复点击不会重新排队。
 
 **候诊队列刻意不脱敏**：医生必须能识别面前的患者，把姓名打成"张*"会让队列失去意义。
-该接口仅对 doctor/admin 开放——这是 spec §2.2 脱敏规则的**有意例外**。
+这是 spec §2.2 脱敏规则的**有意例外**。
+
+> ⚠️ **但"不脱敏"必须配上归属校验。** 这个端点曾经只挂了 `RequireRole(doctor)`，
+> service 层没有校验排班归属 —— 于是**任何医生换一个排班 ID 就能枚举全院患者的
+> 姓名与 user_id**。全量审视时才发现（见 `HANDOVER.md` §2.7-B）。
+>
+> 现在的 `Queue(ctx, access, scheduleID)` 会校验 `schedule.DoctorID == 本人 doctors.id`
+> （管理员豁免）。
+>
+> **规律：凡是返回未脱敏个人数据的端点，都必须问一句"它有没有做资源层归属校验"。**
+> 路由层 RBAC 只回答"你是不是医生"，回答不了"这个排班是不是你的"。
 
 ### 4.5 超时释放与对账
 
@@ -660,7 +673,8 @@ internal/handler/record.go
 
 internal/service/access.go       ★ 共用访问者身份 Access{UserID, Role}
 
-internal/mockhis/                模拟 HIS 数据源 + dataset.json
+internal/mockhis/                模拟 HIS 数据源（his 契约的适配器）+ dataset.json
+internal/his/                    ★ HIS 对接的数据契约（只放类型，不放接口）
 internal/model/synclog.go
 internal/repository/sync.go      三阶段 upsert
 internal/repository/synclog.go
@@ -671,9 +685,18 @@ internal/handler/sync.go
 internal/model/appointment.go        + DoctorAppointmentItem / DoctorAppointmentFilter
 internal/repository/appointment.go   + ListByDoctorCursor / ListAllCursor
 internal/repository/doctor.go        + FindIDByUserID（从 MedicalRecordRepo 迁来）
-internal/service/appointment.go      + ListForDoctor / doctorIDOf / validateAppointmentFilter
+internal/service/appointment.go      + ListForDoctor / validateAppointmentFilter
 internal/service/preconsult_submit.go + authorizeReport
 ```
+
+> **为什么有独立的 `internal/his` 包**：`SyncService` 的入参原本是
+> `*mockhis.Dataset` —— 业务逻辑包依赖了一个名字里带 mock 的实现包，
+> 于是"接真实 HIS 只需换实现"这句话是假的（真实适配器得 import 一个 mock 才能拿到类型）。
+> 现在契约在 `his`，`mockhis` 只是它的一个适配器，并负责把数据文件里
+> "相对今天 N 天"的写法换算成绝对日期，不再泄漏到业务层。
+> 接口仍按本项目惯例由使用方 `service` 声明（见 `deps.go` 的说明）。
+>
+> **规律：接口签名里出现某个"实现方"的包名，就说明抽象放错了位置。**
 
 ### 6.2 审计：异步批量写入（一个必须明说的取舍）
 
@@ -688,7 +711,7 @@ internal/service/preconsult_submit.go + authorizeReport
 
 **若合规要求零丢失**：把 `Record` 改成直接落库即可，其余代码不变。
 
-**五个设计点**：
+**六个设计点**：
 
 | 设计 | 理由 |
 |---|---|
@@ -696,7 +719,17 @@ internal/service/preconsult_submit.go + authorizeReport
 | `Entry` **刻意不含请求体** | 请求体可能含手机号、口令、病情描述 —— 复制进审计表等于把脱敏工作全部作废 |
 | 资源/动作从 **`FullPath` 推导** | 用真实路径会让每个 ID 产生不同"资源名"，审计查询无法按资源聚合 |
 | `trailingActions` 映射表 | 覆盖"末段是动作而非资源"的路由：`/appointments/:id/cancel` → action=`cancel`，否则会被记成笼统的 `create` |
+| `scopeSegments` 跳过**权限域** | `/api/v1/admin/*` 的第 3 段是权限域而不是资源。曾直接取第 3 段，导致三个管理端点的 resource 全塌成 `admin`，按资源聚合时混成一条 |
 | `Stop()` **必须幂等** | 启动失败回滚路径与 `main` 的 defer 都可能调用它；重复调用会 close 已关闭 channel 而 panic —— 恰恰在最需要优雅退出的时刻 |
+
+> ⚠️ **这个 bug 曾被两个测试同时固化**：`audit_test.go` 断言 resource 是 `admin`，
+> `http_test.go` 也查 `resource = 'admin'`。测试全绿，问题却一直在
+> （见 `HANDOVER.md` §2.7-C）。**测试里出现"当前实现恰好返回的值"时，
+> 要回代码确认那是不是正确值。**
+>
+> 另一个坑：`audit.truncate` 按**字节**截断会把中文字符切成两半，
+> utf8mb4 列在严格模式下直接报错，**整批 100 条审计一起插入失败**。
+> 现已回退到字符边界，并有专门用例守护。
 
 ### 6.3 病历：资源层归属校验（spec §2.2 双层校验的第二层）
 
@@ -855,7 +888,8 @@ M6 医疗与同步（record / sync / audit）+ 医生工作台补全（见 §6.7
 | `repository.Cache` | M3 ↔ M5 | M5 的 `reconcile.go` 用 M4 的 `stockStore.CompareAndSet` |
 | `appointmentStore` 接口 | M4 ↔ M5 | M5 用 `FindItemByID` 校验归属（SQL 层带 `user_id`，不泄露他人预约是否存在） |
 | `doctorAppointmentStore` 接口 | M4 ↔ M6 | 医生/管理员视角的接诊列表读取能力，**与患者侧 `appointmentStore` 分开声明** |
-| `doctorLookup` 接口 | M4 ↔ M5 ↔ M6 | 三个模块都要"由 `users.id` 解析 `doctors.id`"；实现在 `DoctorRepo.FindIDByUserID` |
+| `doctorLookup` 接口 | M4 ↔ M5 ↔ M6 | 三个模块都要"由 `users.id` 解析 `doctors.id`"；实现在 `DoctorRepo.FindIDByUserID`，映射逻辑收敛在 `service/access.go` 的 `resolveDoctorID` |
+| `his.Dataset` 契约 | M1 ↔ M6 | `service` 依赖 `his` 契约（**不依赖 `mockhis`**）；`mockhis` 只是 `his` 的一个适配器 |
 | `service.Access` | M4 ↔ M5 ↔ M6 | 三个 service 共用的访问者身份；**改它的字段要同时改三处调用方** |
 | `audit.Recorder` | M1 ↔ M6 | 中间件依赖最小接口，便于测试替换 |
 | `app.Build()` | 全部 | **改任何模块的构造签名都要改这里**，集成测试复用同一套装配 |
@@ -872,4 +906,4 @@ M6 医疗与同步（record / sync / audit）+ 医生工作台补全（见 §6.7
 | **M3** | 禁止 OFFSET（284 倍差距）；手写 JOIN 必须带软删除条件；缓存回源要脱离调用方取消 |
 | **M4** | 预热用 `SETNX`；键不存在返回 -1 不是 0；幂等键比对删除；对账用 CompareAndSet |
 | **M5** | 流式用回调不用 channel；降级是正常路径不是异常；`{}` 是合法 Schema 所以要自检 |
-| **M6** | 审计异步但有丢失窗口；HIS 同步分三阶段；排班 `remaining` 不被重置；**模块打勾 ≠ 角色无缺口，收尾要按角色横切复查** |
+| **M6** | 审计异步但有丢失窗口；HIS 同步分三阶段；排班 `remaining` 不被重置；**模块打勾 ≠ 角色无缺口，收尾要按角色横切复查**；**业务包不得依赖 mock 包** |

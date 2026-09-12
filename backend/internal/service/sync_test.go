@@ -5,13 +5,14 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/medicore/backend/internal/apperr"
 	"github.com/medicore/backend/internal/errcode"
-	"github.com/medicore/backend/internal/mockhis"
+	"github.com/medicore/backend/internal/his"
 	"github.com/medicore/backend/internal/model"
 	"github.com/medicore/backend/internal/repository"
 	"github.com/medicore/backend/internal/secret"
@@ -20,11 +21,11 @@ import (
 // --- 内存实现 ---
 
 type fakeSyncSource struct {
-	dataset *mockhis.Dataset
+	dataset *his.Dataset
 	err     error
 }
 
-func (f *fakeSyncSource) Load(context.Context) (*mockhis.Dataset, error) {
+func (f *fakeSyncSource) Load(context.Context) (*his.Dataset, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -81,14 +82,14 @@ func (f *fakeSyncStore) FindDepartmentIDByCode(_ context.Context, code string) (
 
 func (f *fakeSyncStore) UpsertDoctor(
 	_ context.Context, in repository.SyncDoctorInput, _ uint64, _ bool,
-) (uint64, error) {
+) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.doctorFail {
-		return 0, errors.New("upsert doctor failed")
+		return errors.New("upsert doctor failed")
 	}
 	f.doctors[in.ExternalID] = in
-	return uint64(len(f.doctors)), nil
+	return nil
 }
 
 func (f *fakeSyncStore) FindDoctorIDByExternalID(_ context.Context, externalID string) (uint64, error) {
@@ -102,15 +103,14 @@ func (f *fakeSyncStore) FindDoctorIDByExternalID(_ context.Context, externalID s
 
 func (f *fakeSyncStore) UpsertSchedule(
 	_ context.Context, in model.Schedule, externalID string,
-) (bool, error) {
+) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.scheduleErr {
-		return false, errors.New("upsert schedule failed")
+		return errors.New("upsert schedule failed")
 	}
-	_, existed := f.schedules[externalID]
 	f.schedules[externalID] = in
-	return !existed, nil
+	return nil
 }
 
 type fakeSyncLogStore struct {
@@ -126,7 +126,7 @@ func newFakeSyncLogStore() *fakeSyncLogStore {
 	return &fakeSyncLogStore{views: map[uint64]model.SyncLogView{}}
 }
 
-func (f *fakeSyncLogStore) Start(_ context.Context, source, trigger string) (uint64, error) {
+func (f *fakeSyncLogStore) Start(_ context.Context, source, trigger, _ string) (uint64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.started++
@@ -182,23 +182,29 @@ func (f *fakeSyncLogStore) lastResult() repository.SyncResult {
 
 // --- 组装 ---
 
-func testDataset() *mockhis.Dataset {
-	return &mockhis.Dataset{
-		Departments: []mockhis.Department{
+// testToday 是测试数据的基准日。
+//
+// 这里用绝对日期而不是"相对今天 N 天"：相对写法是 mockhis 内部解析
+// 演示数据文件时的细节，契约（his.Schedule）里只有绝对日期。
+var testToday = time.Date(2026, 9, 12, 0, 0, 0, 0, time.Local)
+
+func testDataset() *his.Dataset {
+	return &his.Dataset{
+		Departments: []his.Department{
 			{ExternalID: "D1", Code: "CARD", Name: "心血管内科", SortOrder: 10},
 			{ExternalID: "D2", Code: "NEUR", Name: "神经内科", SortOrder: 20},
 		},
-		Doctors: []mockhis.Doctor{
+		Doctors: []his.Doctor{
 			{ExternalID: "DOC1", Name: "陈医生", Phone: "13610000001", Title: "主任医师",
 				DepartmentCode: "CARD", ConsultFee: "50.00", IsPrimary: true},
 			{ExternalID: "DOC2", Name: "林医生", Phone: "13610000002", Title: "主治医师",
 				DepartmentCode: "CARD", ConsultFee: "20.00", IsPrimary: true},
 		},
-		Schedules: []mockhis.Schedule{
+		Schedules: []his.Schedule{
 			{ExternalID: "S1", DoctorExternal: "DOC1", DepartmentCode: "CARD",
-				DateOffsetDays: 0, TimeSlot: model.TimeSlotAM, Total: 30},
+				SchedDate: testToday, TimeSlot: model.TimeSlotAM, Total: 30},
 			{ExternalID: "S2", DoctorExternal: "DOC2", DepartmentCode: "CARD",
-				DateOffsetDays: 1, TimeSlot: model.TimeSlotPM, Total: 20},
+				SchedDate: testToday.AddDate(0, 0, 1), TimeSlot: model.TimeSlotPM, Total: 20},
 		},
 	}
 }
@@ -224,7 +230,6 @@ func newSyncFixture(t *testing.T) *syncFixture {
 		Logs:        logs,
 		Cipher:      cipher,
 		PhonePepper: randomHex(t, 16),
-		Concurrency: 5,
 	})
 	return &syncFixture{svc: svc, store: store, logs: logs}
 }
@@ -247,15 +252,20 @@ func TestSync_Success(t *testing.T) {
 	assert.Len(t, f.store.schedules, 2)
 }
 
-// 医生与排班的日期必须能落库，说明相对日期偏移被正确解析。
-func TestSync_SchedulesUseRelativeDate(t *testing.T) {
+// 排班日期必须原样落到库里。
+//
+// "相对今天 N 天"是 mockhis 解析演示数据文件时的内部写法，
+// 到这里（契约层）已经是绝对日期，service 只做透传，不得再做日期运算。
+// 相对日期的换算由 mockhis 自己的测试守护。
+func TestSync_ScheduleDateIsPassedThrough(t *testing.T) {
 	f := newSyncFixture(t)
 
 	_, err := f.svc.Sync(context.Background(), model.SyncTriggerManual)
 	require.NoError(t, err)
 
 	require.Contains(t, f.store.schedules, "S1")
-	assert.False(t, f.store.schedules["S1"].SchedDate.IsZero())
+	assert.Equal(t, testToday, f.store.schedules["S1"].SchedDate,
+		"service 不应改写数据源给出的排班日期")
 }
 
 // 同步来的医生账号必须无法用已知默认口令登录。
@@ -362,7 +372,7 @@ func TestSync_LogStartedBeforeWork(t *testing.T) {
 
 func TestSync_EmptyDataset(t *testing.T) {
 	f := newSyncFixture(t)
-	f.svc.source = &fakeSyncSource{dataset: &mockhis.Dataset{}}
+	f.svc.source = &fakeSyncSource{dataset: &his.Dataset{}}
 
 	view, err := f.svc.Sync(context.Background(), model.SyncTriggerManual)
 

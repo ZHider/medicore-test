@@ -6,6 +6,11 @@ import "time"
 //
 // 注意本表刻意没有 deleted_at / updated_at：审计记录一旦写入就不可修改、不可删除，
 // 也不随业务数据被软删除（spec §2.2 要求管理员可查，§9.2 要求 TraceID 贯穿）。
+//
+// 同样刻意**没有** detail / payload 之类的字段：审计只记"谁在什么时候对哪个资源
+// 做了什么"，不记请求体。请求体里可能是手机号、口令、病情描述，
+// 存进来等于把前面所有脱敏工作作废。曾经有一个 detail JSON 列，
+// 既从没被写入也从没被读取，已删除——留着一个空列只会诱使后人往里塞敏感数据。
 type AuditLog struct {
 	ID         uint64    `gorm:"column:id;primaryKey"`
 	TraceID    string    `gorm:"column:trace_id"`
@@ -20,7 +25,6 @@ type AuditLog struct {
 	LatencyMS  int       `gorm:"column:latency_ms"`
 	ClientIP   *string   `gorm:"column:client_ip"`
 	UserAgent  *string   `gorm:"column:user_agent"`
-	Detail     *string   `gorm:"column:detail"`
 	CreatedAt  time.Time `gorm:"column:created_at"`
 }
 

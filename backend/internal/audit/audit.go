@@ -20,6 +20,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
@@ -276,6 +277,15 @@ var trailingActions = map[string]string{
 	"refresh":  "refresh",
 }
 
+// scopeSegments 是"权限域"而非资源名的路径段。
+//
+// /api/v1/admin/* 下的段结构是 api/v1/admin/<resource>，
+// 若直接取第 3 段，三个管理端点（audit-logs / sync / sync-logs）会全部被记成
+// resource=admin，按资源聚合时它们混成一条，审计查询就失去了区分能力。
+var scopeSegments = map[string]struct{}{
+	"admin": {},
+}
+
 // Describe 从路由模板推导审计用的资源与动作。
 //
 // 输入是 gin 的 FullPath（形如 /api/v1/appointments/:id/cancel）而非真实路径：
@@ -286,8 +296,15 @@ func Describe(fullPath, method string) (resource, action string) {
 		return "", methodAction(method)
 	}
 
-	resource = segments[2]
-	if len(segments) > 3 {
+	// 取版本段之后的第一个非权限域段作为资源名；若整条路径只有权限域，
+	// 就退回到该域本身（例如未来出现 /api/v1/admin 这样的端点）。
+	idx := 2
+	if _, isScope := scopeSegments[segments[idx]]; isScope && len(segments) > idx+1 {
+		idx++
+	}
+	resource = segments[idx]
+
+	if idx < len(segments)-1 {
 		if a, ok := trailingActions[segments[len(segments)-1]]; ok {
 			return resource, a
 		}
@@ -304,9 +321,18 @@ func optionalString(s string) *string {
 	return &s
 }
 
+// truncate 把字符串按**字节**截断到 max，但不会切断多字节字符。
+//
+// 为什么不能直接 s[:max]：User-Agent 里出现非 ASCII（不少国产 App 会把中文写进 UA）
+// 时，按字节切会切出非法 UTF-8。目标列是 utf8mb4，MySQL 在严格模式下会直接拒绝，
+// 于是**整批 100 条审计记录一起插入失败**——一条畸形 UA 干掉一批审计。
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
+	}
+	// 回退到最近的一个字符起始字节
+	for max > 0 && !utf8.RuneStart(s[max]) {
+		max--
 	}
 	return s[:max]
 }

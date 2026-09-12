@@ -64,12 +64,17 @@ type fakeDoctorLookup struct {
 	doctorID uint64
 	byUser   map[uint64]uint64
 	err      error
+
+	// calls 记录被调用次数。断言"某分支不该查医生档案"时必须看它——
+	// 只看返回值的写法是永远成立的（fake 不会因为被调用而改变字段）。
+	calls int
 }
 
 // fakeDoctorLookup 支持两种用法：
 //   - byUser 非空时按用户 ID 精确映射（"其他医生"这类多用户场景必须用它）
 //   - 否则固定返回 doctorID，适合只有一个医生的简单场景
 func (f *fakeDoctorLookup) FindIDByUserID(_ context.Context, userID uint64) (uint64, error) {
+	f.calls++
 	if f.err != nil {
 		return 0, f.err
 	}
@@ -86,27 +91,33 @@ func (f *fakeDoctorLookup) FindIDByUserID(_ context.Context, userID uint64) (uin
 // --- 组装 ---
 
 type doctorListFixture struct {
-	svc    *AppointmentService
-	store  *fakeDoctorAppointmentStore
-	doctor *fakeDoctorLookup
+	svc       *AppointmentService
+	store     *fakeDoctorAppointmentStore
+	appts     *fakeAppointmentStore
+	schedules *fakeScheduleStore
+	doctor    *fakeDoctorLookup
 }
 
 func newDoctorListFixture(t *testing.T) *doctorListFixture {
 	t.Helper()
 
 	store := &fakeDoctorAppointmentStore{}
+	appts := &fakeAppointmentStore{}
+	schedules := &fakeScheduleStore{}
 	doctor := &fakeDoctorLookup{doctorID: 7}
 
 	svc := NewAppointmentService(AppointmentDeps{
-		Appointments:       &fakeAppointmentStore{},
+		Appointments:       appts,
 		DoctorAppointments: store,
 		Doctors:            doctor,
 		Janitor:            &fakeJanitor{},
-		Schedules:          &fakeScheduleStore{},
+		Schedules:          schedules,
 		Stock:              &fakeStockStore{current: map[uint64]int{}},
 		Idempotency:        &fakeIdempotencyStore{},
 	})
-	return &doctorListFixture{svc: svc, store: store, doctor: doctor}
+	return &doctorListFixture{
+		svc: svc, store: store, appts: appts, schedules: schedules, doctor: doctor,
+	}
 }
 
 // --- 医生接诊列表 ---
@@ -147,8 +158,10 @@ func TestListForDoctor_AdminSeesAll(t *testing.T) {
 	assert.True(t, page.HasMore)
 	assert.Equal(t, 1, f.store.allCalls)
 	assert.Zero(t, f.store.doctorCalls, "管理员不应走医生分支")
-	// 管理员没有医生档案，也不该因此失败
-	assert.Zero(t, f.doctor.err == nil && f.doctor.doctorID == 0, "管理员分支不应依赖医生档案")
+	// 管理员没有医生档案，也不该因此失败、更不该去查医生档案。
+	// 这里必须断言**调用次数**：此前的写法是断言 fake 的字段组合，
+	// 而 fake 不会因为被调用而改变字段，断言恒为真、测不出任何东西。
+	assert.Zero(t, f.doctor.calls, "管理员分支不应查医生档案")
 }
 
 // 患者不该能访问医生工作台端点。
@@ -160,6 +173,74 @@ func TestListForDoctor_PatientIsForbidden(t *testing.T) {
 	assert.Equal(t, errcode.ErrForbidden, apperr.Code(err))
 	assert.Zero(t, f.store.doctorCalls)
 	assert.Zero(t, f.store.allCalls)
+}
+
+// --- 候诊队列的归属校验 ---
+
+// 候诊队列返回的是**未脱敏**的患者姓名与 user_id，
+// 因此必须校验"这个排班是不是你的"。
+//
+// 曾经的漏洞：Queue 只接受 scheduleID，归属校验完全依赖路由层的
+// RequireRole(doctor)，任何医生改一下 URL 里的 ID 就能拿到全院患者的身份信息。
+// 病历与预问诊报告都有这一层，队列没有理由例外。
+func TestQueue_OtherDoctorsScheduleIsForbidden(t *testing.T) {
+	f := newDoctorListFixture(t)
+	f.schedules.scheduleBy = &model.Schedule{ID: 42, DoctorID: 999} // 别人的排班
+	f.appts.queueRows = []model.QueueItem{{ID: 1, PatientName: "张三"}}
+
+	items, err := f.svc.Queue(context.Background(), doctorAccess(100), 42)
+
+	assert.Nil(t, items)
+	assert.Equal(t, errcode.ErrNotOwner, apperr.Code(err))
+	assert.Zero(t, f.appts.queueCalls, "越权时必须在校验阶段就拒绝，不能先读出来再判断")
+}
+
+func TestQueue_OwnScheduleIsAllowed(t *testing.T) {
+	f := newDoctorListFixture(t)
+	f.schedules.scheduleBy = &model.Schedule{ID: 42, DoctorID: 7}
+	f.appts.queueRows = []model.QueueItem{{ID: 1, PatientName: "张三"}}
+
+	items, err := f.svc.Queue(context.Background(), doctorAccess(100), 42)
+
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	// 队列刻意不脱敏，前端要靠这个姓名叫号
+	assert.Equal(t, "张三", items[0].PatientName)
+	assert.Equal(t, 1, f.appts.queueCalls)
+}
+
+// 管理员拥有全部读权限（spec §2.1），且不需要有医生档案。
+func TestQueue_AdminCanReadAnySchedule(t *testing.T) {
+	f := newDoctorListFixture(t)
+	f.schedules.scheduleBy = &model.Schedule{ID: 42, DoctorID: 999}
+	f.appts.queueRows = []model.QueueItem{{ID: 1}}
+
+	items, err := f.svc.Queue(context.Background(), adminAccess(), 42)
+
+	require.NoError(t, err)
+	assert.Len(t, items, 1)
+	assert.Zero(t, f.doctor.calls, "管理员分支不应查医生档案")
+}
+
+func TestQueue_PatientIsForbidden(t *testing.T) {
+	f := newDoctorListFixture(t)
+
+	_, err := f.svc.Queue(context.Background(), patientAccess(100), 42)
+
+	assert.Equal(t, errcode.ErrForbidden, apperr.Code(err))
+	assert.Zero(t, f.appts.queueCalls)
+}
+
+// 排班不存在与"不是你的排班"要区分开：
+// 前者是 404，后者是 403，前端才能给出不同提示。
+func TestQueue_MissingScheduleIsNotFound(t *testing.T) {
+	f := newDoctorListFixture(t)
+	f.schedules.scheduleBy = nil // FindByID 返回 ErrNotFound
+
+	_, err := f.svc.Queue(context.Background(), doctorAccess(100), 42)
+
+	assert.Equal(t, errcode.ErrNotFound, apperr.Code(err))
+	assert.Zero(t, f.appts.queueCalls)
 }
 
 // 没有医生档案的账号（例如误配角色）应得到明确拒绝，而不是空列表。

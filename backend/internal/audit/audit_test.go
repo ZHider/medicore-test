@@ -3,9 +3,11 @@ package audit
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,7 +38,9 @@ func TestDescribe(t *testing.T) {
 		{"登录", "/api/v1/auth/login", "POST", "auth", "login"},
 		{"注册", "/api/v1/auth/register", "POST", "auth", "register"},
 		{"登出", "/api/v1/auth/logout", "POST", "auth", "logout"},
-		{"审计查询", "/api/v1/admin/audit-logs", "GET", "admin", "view"},
+		{"审计查询", "/api/v1/admin/audit-logs", "GET", "audit-logs", "view"},
+		{"同步触发", "/api/v1/admin/sync/:source", "POST", "sync", "create"},
+		{"同步日志", "/api/v1/admin/sync-logs", "GET", "sync-logs", "view"},
 		{"未知末段回退到方法语义", "/api/v1/foo/:id/whatever", "PUT", "foo", "update"},
 		{"非 api 路径", "/healthz", "GET", "", "view"},
 		{"空路径", "", "POST", "", "create"},
@@ -49,6 +53,28 @@ func TestDescribe(t *testing.T) {
 			assert.Equal(t, tt.wantAction, action)
 		})
 	}
+}
+
+// 管理端点必须按真实资源区分。
+//
+// 曾经的 bug：Describe 取的是版本段之后的第 1 段，于是 /api/v1/admin/* 全部
+// 被记成 resource=admin，三个管理端点按资源聚合后混成一条。
+// 这个用例把它钉死。注意测试里同时断言"三个资源名互不相同"，
+// 避免将来又退化成同一个值。
+func TestDescribe_AdminRoutesKeepDistinctResources(t *testing.T) {
+	paths := []string{
+		"/api/v1/admin/audit-logs",
+		"/api/v1/admin/sync/:source",
+		"/api/v1/admin/sync-logs",
+	}
+
+	seen := make(map[string]string, len(paths))
+	for _, p := range paths {
+		resource, _ := Describe(p, "GET")
+		assert.NotEqual(t, "admin", resource, "资源名不应是权限域 %q: %s", "admin", p)
+		seen[resource] = p
+	}
+	assert.Len(t, seen, len(paths), "三个管理端点的资源名必须互不相同，实际: %v", seen)
 }
 
 // 用路由模板而非真实路径，是为了让同一资源的记录能被聚合查询。
@@ -88,12 +114,6 @@ func (f *fakeStore) total() int {
 		n += len(b)
 	}
 	return n
-}
-
-func (f *fakeStore) batchCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.batches)
 }
 
 func (f *fakeStore) setErr(err error) {
@@ -251,6 +271,31 @@ func TestWriter_TruncatesLongUserAgent(t *testing.T) {
 	require.Len(t, store.batches[0], 1)
 	require.NotNil(t, store.batches[0][0].UserAgent)
 	assert.Len(t, *store.batches[0][0].UserAgent, 255, "超长 UA 应被截断，否则会写入失败")
+}
+
+// 截断必须落在字符边界上。
+//
+// 按字节硬切会切出非法 UTF-8，而目标列是 utf8mb4：MySQL 在严格模式下会直接报错，
+// 于是一条畸形 UA 让**整批 100 条审计记录一起插入失败**。
+// 这里用中文（每字 3 字节）构造跨界场景。
+func TestWriter_TruncationDoesNotSplitMultibyteRune(t *testing.T) {
+	store := &fakeStore{}
+	w := newTestWriter(store)
+	w.Start()
+
+	entry := sampleEntry()
+	// 200 个汉字 = 600 字节，远超 255；第 255 字节必然落在某个字的中间
+	entry.UserAgent = strings.Repeat("中", 200)
+	w.Record(entry)
+	w.Stop()
+
+	require.Len(t, store.batches, 1)
+	ua := store.batches[0][0].UserAgent
+	require.NotNil(t, ua)
+
+	assert.LessOrEqual(t, len(*ua), 255, "截断后不应超过列宽")
+	assert.True(t, utf8.ValidString(*ua), "截断结果必须是合法 UTF-8，实际字节: % x", *ua)
+	assert.Equal(t, strings.Repeat("中", len(*ua)/3), *ua, "不应切出半个汉字")
 }
 
 // 空字符串统一转成 NULL：空串与 NULL 在索引与查询上的行为不同。

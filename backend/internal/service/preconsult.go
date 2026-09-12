@@ -226,7 +226,7 @@ func (s *PreconsultService) ensureChattable(ctx context.Context, userID, appoint
 	}
 
 	// 已取消/已过期的预约不能再进行预问诊
-	if item.Status != model.AppointmentStatusPending && item.Status != model.AppointmentStatusConfirmed {
+	if !model.IsActiveAppointmentStatus(item.Status) {
 		return apperr.New(errcode.ErrConflict, "当前预约状态不支持预问诊")
 	}
 	return nil

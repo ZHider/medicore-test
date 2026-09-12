@@ -106,8 +106,22 @@ UNIQUE KEY uk_doctor_dept_date_slot (doctor_id, department_id, sched_date, time_
 唯一键（如 `uk_phone_hash`、`uk_external`、`uk_code`）**保持全局唯一，不加 `deleted_at`**。理由：
 
 - 若把 `deleted_at` 并入唯一键，MySQL 中多行 NULL 互不冲突，反而**会让唯一性失效**。
-- 保持全局唯一后，"删除后重建同名记录"由 service 层**复活（resurrect）**原行：`UPDATE ... SET deleted_at = NULL`。
-- 对 HIS 同步尤其正确：`external_id` 是 upsert 的锚点，重新同步应复活而非插入重复行。
+- 保持全局唯一，意味着"删除后重建同名记录"必须由 service 层**复活（resurrect）**原行
+  （`UPDATE ... SET deleted_at = NULL`），而不是插入新行。
+  对 HIS 同步尤其重要：`external_id` 是 upsert 的锚点，重新同步应复活而非插入重复行。
+
+> ⚠️ **复活逻辑目前并未实现 —— 这是一处已知缺口，不是"已经做好了"。**
+>
+> 全量审视时逐项核对过：代码里**没有任何** `Unscoped()` / `deleted_at = NULL` / `.Delete()` 调用。
+> 也就是说：
+>
+> - 当前**没有任何入口会软删这些表**，所以复活路径不可达，缺口暂时不会暴露；
+> - 但若将来加上管理端的删除功能，`UpsertSchedule` 会命中 `uk_external` 冲突而**永久同步失败**
+>   （它按带软删作用域的查询找不到已删行 → 走 Create → 唯一键冲突）；
+>   `UpsertDepartment` 的 `ON DUPLICATE KEY UPDATE` 会更新到已删行但**不清 `deleted_at`**，
+>   于是数据"更新成功"却依然在列表里看不见。
+>
+> **加删除功能之前，必须先实现复活。** 已记入 `HANDOVER.md` §3.3。
 
 **唯一的例外是 `appointments.active_uk`**，其生成列表达式已包含软删除判断，使软删除同样释放号源占位：
 

@@ -70,14 +70,17 @@ func (r *SyncRepo) FindDepartmentIDByCode(ctx context.Context, code string) (uin
 	return id, nil
 }
 
-// UpsertDoctor 创建/更新医生账号与档案，返回医生档案 ID。
+// UpsertDoctor 创建/更新医生账号与档案。
 //
 // 三步在同一事务内完成：账号、档案、科室关联缺一不可，
 // 中途失败会留下"有账号没档案"或"有档案没科室"的残缺数据，
 // 表现为医生在列表里凭空消失。
+//
+// 不返回医生档案 ID：唯一的调用方用不到它（曾经返回但被丢弃），
+// 需要时再加比留一个无人使用的返回值更好。
 func (r *SyncRepo) UpsertDoctor(
 	ctx context.Context, in SyncDoctorInput, departmentID uint64, isPrimary bool,
-) (uint64, error) {
+) error {
 	var doctorID uint64
 
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -134,9 +137,9 @@ func (r *SyncRepo) UpsertDoctor(
 		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rel).Error
 	})
 	if err != nil {
-		return 0, err
+		return err
 	}
-	return doctorID, nil
+	return nil
 }
 
 // FindDoctorIDByExternalID 按 HIS 外部 ID 查医生档案 ID。
@@ -168,8 +171,8 @@ func (r *SyncRepo) FindDoctorIDByExternalID(ctx context.Context, externalID stri
 // 用事务包住"读旧值 + 写新值"，避免并发同步把增量算错。
 func (r *SyncRepo) UpsertSchedule(
 	ctx context.Context, in model.Schedule, externalID string,
-) (created bool, err error) {
-	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+) error {
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing model.Schedule
 
 		findErr := tx.Where("external_id = ?", externalID).First(&existing).Error
@@ -181,7 +184,6 @@ func (r *SyncRepo) UpsertSchedule(
 			if err := tx.Create(&in).Error; err != nil {
 				return fmt.Errorf("create schedule: %w", err)
 			}
-			created = true
 			return nil
 
 		case findErr != nil:
@@ -208,8 +210,5 @@ func (r *SyncRepo) UpsertSchedule(
 				"updated_at":    gorm.Expr("NOW(3)"),
 			}).Error
 	})
-	if err != nil {
-		return false, err
-	}
-	return created, nil
+	return err
 }

@@ -53,7 +53,12 @@ func (r *MedicalRecordRepo) CreateWithPrescriptions(
 	return err
 }
 
-// recordViewSelect 统一病历视图的列，避免多处出现不一致的别名。
+// recordViewSelect 是病历**详情**的列。
+//
+// 注意它并不与 listByCursor 里的列表查询共用：列表刻意不返回
+// chief_complaint / present_illness / treatment_advice 这三段长文本
+// （列表页用不到，白拉一遍纯属浪费带宽）。两处有 8 个列是相同的，
+// 但为此拼 SQL 字符串反而更难读，因此保持分开。
 const recordViewSelect = `r.id, r.appointment_id, r.patient_id,
 	COALESCE(p.name, '') AS patient_name,
 	r.doctor_id,
@@ -95,20 +100,6 @@ func (r *MedicalRecordRepo) FindViewByAppointment(
 		return nil, ErrNotFound
 	}
 	return &view, nil
-}
-
-// FindByID 按主键查询病历实体。
-func (r *MedicalRecordRepo) FindByID(ctx context.Context, id uint64) (*model.MedicalRecord, error) {
-	var record model.MedicalRecord
-
-	err := r.db.WithContext(ctx).First(&record, id).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("find medical record: %w", err)
-	}
-	return &record, nil
 }
 
 // ListPrescriptions 返回病历的处方明细，按书写顺序排列。

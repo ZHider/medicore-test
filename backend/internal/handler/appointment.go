@@ -91,22 +91,36 @@ func (h *AppointmentHandler) CheckIn(c *gin.Context) {
 		response.FailErr(c, err)
 		return
 	}
+
+	// checked_in_at 必须与其他接口保持同一种时间格式：
+	// 直接塞 time.Time 会序列化成 RFC3339（带时区偏移），
+	// 前端就得为这一个字段单独写解析分支。未签到时为 null。
+	var checkedInAt *string
+	if appt.CheckedInAt != nil {
+		s := appt.CheckedInAt.Format(model.APITimeLayout)
+		checkedInAt = &s
+	}
+
 	response.OK(c, gin.H{
 		"id":            appt.ID,
 		"queue_no":      appt.QueueNo,
-		"checked_in_at": appt.CheckedInAt,
+		"checked_in_at": checkedInAt,
 		"status":        appt.Status,
 	})
 }
 
 // Queue 返回候诊队列（医生端）。
+//
+// 归属校验在 service 层：路由只说明"你是医生"，不说明"这个排班归你"。
+// 队列里是**未脱敏**的患者姓名与 user_id，缺了这一层，任何医生换一个排班 ID
+// 就能拿到全院患者的身份信息。
 func (h *AppointmentHandler) Queue(c *gin.Context) {
 	scheduleID, ok := uintParam(c, "id")
 	if !ok {
 		return
 	}
 
-	items, err := h.svc.Queue(c.Request.Context(), scheduleID)
+	items, err := h.svc.Queue(c.Request.Context(), accessOf(c), scheduleID)
 	if err != nil {
 		response.FailErr(c, err)
 		return

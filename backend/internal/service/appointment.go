@@ -210,10 +210,17 @@ func (s *AppointmentService) recoverDuplicate(
 	ctx context.Context, userID uint64, idemKey string,
 ) (*model.AppointmentItem, error) {
 	existing, err := s.appointments.FindByUserAndIdempotencyKey(ctx, userID, idemKey)
-	if err != nil {
+	if errors.Is(err, repository.ErrNotFound) {
 		appointmentGrabTotal.WithLabelValues(grabResultDuplicate).Inc()
 		// 不是同一幂等键的重复，而是 uk_active 命中：该用户已占用同一号源
 		return nil, apperr.New(errcode.ErrConflict, "您已预约该号源，请勿重复抢号")
+	}
+	if err != nil {
+		// 查询本身失败（例如数据库抖动）不等于"重复抢号"。
+		// 曾经这里把所有错误都当成冲突返回，用户被告知"您已预约"，
+		// 而真实情况是服务降级，且错误既没包装也没留日志，完全无法排查。
+		appointmentGrabTotal.WithLabelValues(grabResultError).Inc()
+		return nil, apperr.Wrap(errcode.ErrInternal, "查询已有预约失败", err)
 	}
 
 	item, err := s.appointments.FindItemByID(ctx, userID, existing.ID)
@@ -355,14 +362,54 @@ func (s *AppointmentService) CheckIn(
 // Queue 返回某排班的候诊队列。
 //
 // 这里**刻意不对患者姓名脱敏**：医生必须能识别面前的患者，
-// 把姓名打成"张*"会让队列失去意义。该接口仅对 doctor/admin 开放，
-// 属于 spec §2.2 脱敏规则的合理例外，已在 README 中标注。
-func (s *AppointmentService) Queue(ctx context.Context, scheduleID uint64) ([]model.QueueItem, error) {
+// 把姓名打成"张*"会让队列失去意义。属于 spec §2.2 脱敏规则的合理例外，
+// 已在 README 中标注。
+//
+// 但"不脱敏"必须配上**资源层归属校验**：路由层的 RequireRole(doctor) 只说明
+// "你是医生"，不说明"这个排班归你"。缺少下面这段，任何医生改一下 URL 里的
+// 排班 ID 就能拿到全院患者姓名与 user_id —— 与病历、预问诊报告同样的漏洞类型，
+// 那两处都在 service 层做了归属校验，这里没有理由例外。
+func (s *AppointmentService) Queue(
+	ctx context.Context, access Access, scheduleID uint64,
+) ([]model.QueueItem, error) {
+	if !access.IsDoctor() && !access.IsAdmin() {
+		return nil, apperr.New(errcode.ErrForbidden, "仅医生与管理员可查看候诊队列")
+	}
+
+	// 管理员拥有全部读权限（spec §2.1），无需再看排班归属
+	if !access.IsAdmin() {
+		if err := s.authorizeSchedule(ctx, access, scheduleID); err != nil {
+			return nil, err
+		}
+	}
+
 	items, err := s.appointments.ListQueue(ctx, scheduleID)
 	if err != nil {
 		return nil, apperr.Wrap(errcode.ErrInternal, "查询候诊队列失败", err)
 	}
 	return items, nil
+}
+
+// authorizeSchedule 校验该排班是否属于当前医生。
+func (s *AppointmentService) authorizeSchedule(
+	ctx context.Context, access Access, scheduleID uint64,
+) error {
+	schedule, err := s.schedules.FindByID(ctx, scheduleID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return apperr.New(errcode.ErrNotFound, "排班不存在")
+	}
+	if err != nil {
+		return apperr.Wrap(errcode.ErrInternal, "查询排班失败", err)
+	}
+
+	doctorID, err := resolveDoctorID(ctx, s.doctors, access.UserID)
+	if err != nil {
+		return err
+	}
+	if schedule.DoctorID != doctorID {
+		return apperr.New(errcode.ErrNotOwner, "无权查看非本人排班的候诊队列")
+	}
+	return nil
 }
 
 // ReleaseExpired 释放超时未确认的预约，返回实际释放的订单数。
@@ -432,7 +479,7 @@ func (s *AppointmentService) ListForDoctor(
 		rows, err = s.doctorAppointments.ListAllCursor(ctx, filter, cursor, limit)
 	} else {
 		var doctorID uint64
-		doctorID, err = s.doctorIDOf(ctx, access.UserID)
+		doctorID, err = resolveDoctorID(ctx, s.doctors, access.UserID)
 		if err == nil {
 			rows, err = s.doctorAppointments.ListByDoctorCursor(ctx, doctorID, filter, cursor, limit)
 		}
@@ -441,20 +488,6 @@ func (s *AppointmentService) ListForDoctor(
 		return empty, err
 	}
 	return model.NewCursorPage(rows, limit, model.DoctorAppointmentItem.GetID), nil
-}
-
-// doctorIDOf 由用户 ID 解析医生档案 ID。
-//
-// 预约表存的是 doctors.id，直接拿 users.id 比较会永远不相等。
-func (s *AppointmentService) doctorIDOf(ctx context.Context, userID uint64) (uint64, error) {
-	doctorID, err := s.doctors.FindIDByUserID(ctx, userID)
-	if errors.Is(err, repository.ErrNotFound) {
-		return 0, apperr.New(errcode.ErrForbidden, "当前账号没有医生档案")
-	}
-	if err != nil {
-		return 0, apperr.Wrap(errcode.ErrInternal, "查询医生档案失败", err)
-	}
-	return doctorID, nil
 }
 
 // validateAppointmentFilter 校验筛选条件。

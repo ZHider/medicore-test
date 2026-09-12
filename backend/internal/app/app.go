@@ -6,7 +6,6 @@
 package app
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -31,16 +30,6 @@ import (
 	"github.com/medicore/backend/internal/worker"
 	"github.com/medicore/backend/prompts"
 )
-
-// hisSource 是模拟 HIS 数据源。
-//
-// 单独定义而不是直接用函数：真实 HIS 接入时只需替换这个实现，
-// service 层的同步编排逻辑一行不用改。
-type hisSource struct{}
-
-func (hisSource) Load(context.Context) (*mockhis.Dataset, error) {
-	return mockhis.Load()
-}
 
 // App 持有已装配的运行单元。
 type App struct {
@@ -212,7 +201,8 @@ func Build(cfg *config.Config, log *zap.Logger) (*App, error) {
 	// HIS 同步
 	syncLogRepo := repository.NewSyncLogRepo(db)
 	syncSvc := service.NewSyncService(service.SyncDeps{
-		Source:      hisSource{},
+		// 接真实 HIS 时换掉这一个实现即可，同步编排逻辑一行不用改。
+		Source:      mockhis.Source{},
 		Sync:        repository.NewSyncRepo(db),
 		Logs:        syncLogRepo,
 		Cipher:      cipher,

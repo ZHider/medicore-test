@@ -289,7 +289,12 @@ func ensureDoctorDepartment(db *gorm.DB, doctorID, departmentID uint64, primary 
 
 // seedSchedules 为每位医生生成"今天起 7 天 × 上午/下午"的排班。
 func seedSchedules(db *gorm.DB, doctors []model.Doctor) (int, error) {
-	today := time.Now().Truncate(24 * time.Hour)
+	// 必须用本地时区的当天零点，不能 time.Now().Truncate(24*time.Hour)：
+	// 后者截的是 UTC 零点，在 UTC+8 下本地时间 08:00 之前算出来的日期会**早一天**，
+	// 于是刚灌入的演示排班从"昨天"开始，看起来像是数据错了。
+	// 项目其余部分（DSN 的 loc=Local、排班的 sched_date）统一用本地时间。
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	created := 0
 
 	for _, doctor := range doctors {

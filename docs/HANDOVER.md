@@ -40,11 +40,12 @@
 | M6-补 | `0bc436d` | 审计日志（补 spec 缺口）+ 抽取 `internal/app` 装配 |
 | M6-测 | `3f0207c` | HTTP 集成测试层 + worker 消费者组自愈 |
 | M6 | `8eca3e2` | 病历 / 处方 / HIS 模拟同步 |
-| **M6+** | 本次提交 | **医生工作台补全**：接诊列表 + 预问诊报告对医生开放（spec §2.1 的两处角色缺口） |
+| **M6+** | `e3072ab` | **医生工作台补全**：接诊列表 + 预问诊报告对医生开放（spec §2.1 的两处角色缺口） |
+| **审视²** | 本次提交 | **全量代码审视**：修 1 个 HIGH 级恢复路径缺陷、1 处队列越权、1 处 API 契约倒置；清空死代码与无用泛化；`staticcheck`/`deadcode` 归零 |
 
 ### 1.2 关键交付物
 
-**后端**（85 文件 / 9519 行生产代码）：
+**后端**（86 文件 / 9695 行生产代码）：
 
 | 模块 | 能力 |
 |---|---|
@@ -58,16 +59,18 @@
 | 审计 | 异步批量写入审计日志，含资源/动作推导 |
 | 运维 | 健康探针、Prometheus 指标（HTTP / 抢号 / 对账 / LLM / 队列 / 审计） |
 
-**测试**：25 文件 / 5578 行（其中集成 4 文件 / 1338 行），**249 个用例全部通过**
+**测试**：27 文件 / 5901 行（其中集成 5 文件 / 1467 行），**265 个用例全部通过**
 
 | 类型 | 数量 | 运行方式 |
 |---|---|---|
-| 单元测试 | 218 | `nub run backend:test`（无需外部依赖） |
-| 集成测试 | 31 | `nub run backend:test:integration`（需 mysql + redis） |
+| 单元测试 | 228 | `nub run backend:test`（无需外部依赖） |
+| 集成测试 | 37 | `nub run backend:test:integration`（需 mysql + redis） |
 
-**覆盖率**：整体 **32.2%**（`service` 75.9%、`audit` 95.6%、`worker` 89.9%、
-`llm` 89.5%、`prompts` 88.2%、`secret` 87.8%、`jwt` 91.7%、`mask` 100%；
-`repository` 4.8%、`handler` 单元 0%，二者由集成测试保障行为）
+**覆盖率**：整体 **33.0%**（`service` 76.4%、`audit` 94.8%、`mockhis` 92.3%、
+`worker` 90.4%、`jwt` 91.7%、`llm` 89.5%、`prompts` 88.2%、`secret` 87.8%、`mask` 100%；
+`repository` 4.9%、`handler` 单元 0%，二者由集成测试保障行为）
+**静态检查**：`go vet` 0、`staticcheck` 0、`deadcode` 0（后两者为本次审视新引入）
+**注**：`go test -race` 本机不可用（缺 cgo 的 C 编译器），详见 §2.7-G
 
 **文档**：`spec.md`、`FEASIBILITY.md`、`docs/schema.sql`、`docs/database-review.md`、
 `docs/CODE-REVIEW.md`、`AGENTS.md`、`backend/README.md`
@@ -252,6 +255,106 @@ git gc --prune=now                                    # 3. 物理删除悬空对
 **共同点仍是"收尾动作被跳过"**：改完夹具立刻跑一次全包测试，与新建文件前 `grep` 一次，
 两步都能挡住。这与 §5.4 的判断一致——问题不在设计能力，在于每步之后的确认动作。
 
+### 2.7 全量代码审视（医生工作台补全之后）
+
+用三个并行审查 + 三个静态工具（`staticcheck` / `deadcode` / `go vet`）把后端过了一遍。
+**真正的收获不是"发现了很多问题"，而是发现了三类此前完全没被察觉的问题类型。**
+
+#### A. 一个 HIGH 级缺陷：恢复路径自己被 context 掐死
+
+`worker/summary.go` 的消费者组重建分支复用了**已经 cancel** 的 context：
+
+```go
+ctx, cancel := context.WithTimeout(...)
+msgs, err := w.queue.Read(ctx, ...)
+cancel()                              // ← 已经取消
+if repository.IsNoGroupError(err) {
+    w.queue.EnsureGroup(ctx)          // ← 永远返回 context.Canceled
+```
+
+于是"Redis 被 flush 后自动重建消费者组"这条恢复路径**从来没能成功过**，
+循环只会反复记同一条错误日志——而这正是该分支的注释所声称要避免的
+"所有总结任务静默卡死"。修复：重建用独立的 context。
+
+**它此前测不出来，是因为测试里的 fake 忽略了 ctx。** 修 fake（让它在 ctx 失效时
+返回错误并计数）后，把 bug 改回去用例确实变红——已做反向验证。
+
+> **教训：mock/fake 忽略参数，等于放弃对该参数的验证。**
+> 凡是实现会把参数透传给下游的，fake 至少要检查它是否有效。
+
+#### B. 一个信息泄露：候诊队列只做了路由层鉴权
+
+`GET /schedules/:id/queue` 返回**未脱敏**的患者姓名与 `user_id`
+（这是有意的：医生要能叫号），但它只挂了 `RequireRole(doctor)`，
+service 层**完全没有归属校验** —— 任何医生换个排班 ID 就能枚举全院患者身份。
+
+这与刚修完的"预问诊报告对医生开放"是**同一类漏洞**，说明当时是逐点修补而不是
+按类别排查。修复：`Queue` 接收 `Access`，校验排班归属（管理员豁免）。
+
+#### C. 三处"测试把 bug 固化下来"
+
+这是本轮最值得记的一类问题——测试不但没发现问题，反而**把错误行为钉死**：
+
+| 位置 | 固化了什么错误 |
+|---|---|
+| `audit_test.go` 的 `Describe` 用例 | 断言 `/api/v1/admin/audit-logs` 的 resource 是 `admin`，而正确值是 `audit-logs`。三个管理端点的资源名全塌成 `admin`，按资源聚合时混成一条 |
+| `http_test.go` 的审计用例 | 同上，查的是 `resource = 'admin'`，与上面一起把 bug 锁死 |
+| `appointment_doctor_test.go:151` | `assert.Zero(t, f.doctor.err == nil && f.doctor.doctorID == 0)` —— fake 不会因为被调用而改变字段，这个断言恒为真，**即使管理员分支真去查了医生档案也测不出来** |
+
+**教训：断言要观察"行为"，不要观察"夹具的静态字段"。**
+判断某个分支有没有被走到，就数调用次数，不要断言夹具里的值。
+
+#### D. 其余确认并修掉的缺陷
+
+| 缺陷 | 后果 | 修法 |
+|---|---|---|
+| `stockReleaseScript` 的钳位用裸 `SET` | 清掉 `SETNX` 设的 TTL，号源键变成永久键；历史排班又不在对账扫描范围内，错值再也不会被修正 | 加 `KEEPTTL`（与兄弟脚本一致） |
+| `recoverDuplicate` 把任意错误当成"重复抢号" | 数据库抖动被报成 409 冲突，用户被告知"您已预约"，真实原因既没包装也没日志 | `errors.Is(ErrNotFound)` 分支 + 其余走 `apperr.Wrap` |
+| `FailReport` 无条件 `return nil` | 落库失败只写日志，worker 以为已标记失败，报告留在 `processing` | 返回并向上传播错误 |
+| `audit.truncate` 按字节硬切 | UA 含中文时切出非法 UTF-8，utf8mb4 列会让**整批 100 条审计一起插入失败** | 回退到字符边界 |
+| `cmd/seed` 用 `time.Now().Truncate(24h)` | 截的是 UTC 零点，UTC+8 下 08:00 前算出的"今天"早一天，演示排班从昨天开始 | 用本地时区构造当天零点 |
+| `CheckIn` 直接序列化 `*time.Time` | 全接口统一 `%Y-%m-%d %H:%M:%S`，只有这一个字段是 RFC3339，前端要特判 | 用 `model.APITimeLayout` 格式化 |
+| `secret/cipher.go` 包注释写 `Package crypto` | 与包名不符，godoc 不会挂载（ST1000） | 改正 |
+| `conversation.List` 注释说"跳过损坏条目" | 代码其实是整体失败，注释与实现相反 | 保留"失败"行为并改正注释，说明为什么不静默跳过 |
+
+#### E. 死代码与无人使用的"通用性"
+
+`deadcode` + `staticcheck` 现在都是 0 告警。清掉的具体项：
+
+| 类别 | 项 |
+|---|---|
+| 死函数 | `mockhis.Dataset.Summary`、`SyncLogRepo.LastFinished`、`MedicalRecordRepo.FindByID` |
+| 死测试辅助 | `fakeStore.batchCount`、`fakeRecordStore.doctorIDErr` |
+| 从不设置的旋钮 | `SyncDeps.Concurrency`（spec 定死 5，生产从不设，测试设的也是默认值） |
+| 无人使用的返回值 | `UpsertDoctor` 的医生 ID、`UpsertSchedule` 的 `created` |
+| 从不写入的字段 | `sync_logs.trace_id`（改为**真正写入**，见下）、`AuditLog.Detail`（连列一起删除） |
+| 不可达分支 | `runPhase`/`run` 的 errgroup 错误通道——三个 upsert 永远返回 nil，那段代码读起来却像"失败会中止整批" |
+
+**`sync_logs.trace_id` 没有删而是接上了**：它与项目"TraceID 贯通"的设计一致，
+手动触发同步时能把 `sync_logs` 与同一次请求的审计记录串起来。
+**`audit_logs.detail` 则是删掉了**：它从没被写入也没有读取方，
+而审计模块的设计前提正是"不存请求体"（请求体可能含手机号、口令、病情描述）。
+留一个空的 JSON 列，只会诱使后人往里塞敏感数据。列已从 `docs/schema.sql` 移除。
+
+#### F. 一个结构性问题：service 反向依赖了 mock 包
+
+`service/sync.go` 的 `SyncSource.Load` 签名是 `(*mockhis.Dataset, error)`，
+于是**业务逻辑包依赖了一个名字里带 mock 的实现包**——真实 HIS 的适配器
+将不得不 import 一个 mock 来拿类型。那个"抽象接口"实际什么也没抽象。
+
+修复：新增 `internal/his` 契约包（只放数据类型，不放接口，遵循本项目
+"接口由使用方声明"的惯例）；`mockhis` 变成它的一个适配器，并把
+"相对今天 N 天"这种数据文件写法在适配器内部换算成绝对日期，
+不再泄漏到业务层。`app.go` 里那个只为丢弃 ctx 而存在的 `hisSource` 适配器随之删除。
+
+> **教训：接口签名里出现"实现方"的包名，就说明抽象放错了位置。**
+
+#### G. 一个值得记的环境结论
+
+`go test -race` 在本机**跑不了**：`-race` 需要 cgo，而 PATH 里没有 C 编译器
+（`gcc not found`）。这是实测结论，不是猜测。涉及并发的改动目前只能靠
+代码审查 + 单测的可重复性来保障。
+
 ---
 
 ## 三、还没做的工作
@@ -270,17 +373,19 @@ git gc --prune=now                                    # 3. 物理删除悬空对
 | `docs/ai-vibe-coding/` | spec §10.3 要求 WORKFLOW.md + prompts + **≥5 篇** review。**当前一篇都没有**（G6 验收项） |
 | `docs/benchmark/` + `docs/sql-optimization.md` | spec §12.2 要求压测报告与 EXPLAIN 对比。**数据已有**（284 倍、零超卖），只差成文 |
 | 前端管理看板拉 `/metrics` | spec §8.1 要求 ECharts 渲染系统健康度 |
-| **按角色横切复查其余角色** | 本轮按**医生**角色走完整工作流，发现 2 处真实缺口（接诊列表缺失、报告接口没对医生开放）。**患者与管理员角色尚未同样复查一遍** —— 大概率还有同类缺口（见 §2.6 与 `MODULES.md` §6.7） |
+| **按角色横切复查其余角色** | 按**医生**角色走完整工作流发现 2 处缺口；随后全量审视又发现**同类**的候诊队列越权（§2.7-B）。**患者与管理员角色仍未系统复查** —— 这个"同类漏洞逐个冒出来"的模式说明该做一次成体系的排查，而不是等它自己暴露 |
+| `golangci-lint` 配置 | 目前只手工跑 `staticcheck` + `deadcode`；纳入常规链路才能防止死代码回流 |
 
 ### 3.3 低优先级 / 可选
 
 | 项 | 说明 |
 |---|---|
-| `repository` 层覆盖率 | 当前 4.8%。约 1700 行 SQL 主要靠 31 个集成测试保障 |
+| `repository` 层覆盖率 | 当前 4.9%。约 1700 行 SQL 主要靠 37 个集成测试保障 |
 | `handler` 单元覆盖率 | 0%，但集成测试已覆盖全部 29 个端点的行为 |
 | `config` 覆盖率 33.7% | 密钥校验已覆盖，配置加载分支未覆盖 |
-| 真实 LLM 接入 | `llm.NewClient` 对 `openai`/`dashscope`/`deepseek` **明确返回错误**（刻意设计，见 §4.3） |
+| **软删除后的"复活"逻辑未实现** | `database-review.md` §4.2 曾把"由 service 复活 `deleted_at = NULL`"写成已完成，实际上代码里没有任何 `Unscoped()`/`deleted_at = NULL` 调用。当前没有任何入口会软删这些表，所以**缺口不可达**；但**加管理端删除功能之前必须先实现复活**，否则 HIS 同步会永久失败（详见该节说明） |
 | `audit_logs` 分区/归档 | 写入最频繁的表，长期运行需要 TTL 或分区 |
+| 真实 LLM 接入 | `llm.NewClient` 对 `openai`/`dashscope`/`deepseek` **明确返回错误**（刻意设计，见 §4.3） |
 | 上游 typescript-eslint 支持 TS7 后升级前端 | 目前锁定 TS 5.9.3 |
 
 ---
@@ -319,8 +424,12 @@ TypeScript 7 不可用（拆包验证包内无 `typescript.js`）、
 |---|---|
 | `TestLogin_UnknownUserTimingIsEqualized` | 比值降到 0.00 → 失败 ✅ |
 | `TestCacheLoad_LoaderContextSurvivesCallerCancellation` | `context canceled` → 失败 ✅ |
+| `TestLoop_RecreatesMissingConsumerGroup` | 重建改用已取消的 ctx → "ctx 不应已失效" 断言失败 ✅ |
+| `TestQueue_OtherDoctorsScheduleIsForbidden` | 移除归属校验 → 越权者拿到了队列内容 ✅ |
 
 **没有反向验证过的测试，不能算测试。**
+反过来也要小心：**看起来在断言、实则恒为真的测试更危险**——它给人已经覆盖的错觉。
+本项目已发现三处（见 §2.7-C），都是"断言夹具静态字段而非行为"导致的。
 
 ### 5.3 注释解释"为什么"
 
@@ -333,6 +442,9 @@ TypeScript 7 不可用（拆包验证包内无 `typescript.js`）、
 | `startStream()` 延迟到首次吐数据 | 先发 200 再报错 |
 | 对账用 `CompareAndSet` | 对账本身制造超卖 |
 | 缓存回源 `WithoutCancel` | leader 取消波及健康跟随者 |
+| 号源钳位用 `SET ... KEEPTTL` | 裸 `SET` 清掉 TTL，号源键变永久键 |
+| 消费者组重建用独立 ctx | 复用已取消的 ctx → 恢复路径永不成功 |
+| `audit.truncate` 回退到字符边界 | 切出非法 UTF-8 → 整批审计插入失败 |
 | 登录失败也执行假比对 | 响应时间枚举账号 |
 
 ### 5.4 我（AI）的错误模式
@@ -346,6 +458,23 @@ TypeScript 7 不可用（拆包验证包内无 `typescript.js`）、
 **每写完一个文件就跑一次 `go build ./...`**，别攒一批再编译。
 本项目 8 个自我引入的错误里，5 个会在这一步被立刻发现。
 
+### 5.5 第二类错误模式：写"看起来在断言"的测试
+
+§5.4 讲的是收尾动作被跳过。全量审视（§2.7）暴露了**另一类**独立的问题：
+测试写出来了、也跑了、也是绿的，但它其实什么都没验证。
+
+三种具体形态：
+
+| 形态 | 例子 |
+|---|---|
+| 断言夹具的静态字段 | `assert.Zero(t, fake.err == nil && fake.id == 0)` —— fake 不因被调用而变，恒为真 |
+| fake 忽略参数 | `EnsureGroup(context.Context)` 直接忽略 ctx，于是"用已取消的 ctx 调用"这个 bug 测不出来 |
+| 把错误行为写进期望值 | 断言 `/admin/*` 的审计 resource 是 `admin`，等于把 bug 固化 |
+
+**防法**：写"分支不该被走到"的断言时，数**调用次数**；写 fake 时，
+把实现会透传给下游的参数至少检查一次；拿到一个"看起来对"的期望值时，
+回到代码确认它是不是真的对。
+
 ---
 
 ## 六、快速验证项目健康度
@@ -356,9 +485,19 @@ cd D:\Hider\Code\MediCore
 nub run deps:up
 $env:MEDICORE_MYSQL_PASSWORD='medicore123'
 nub run backend:vet                    # 应为 0
-nub run backend:test                   # 218 个用例通过
-nub run backend:test:integration       # 31 个用例通过
+nub run backend:test                   # 228 个用例通过
+nub run backend:test:integration       # 37 个用例通过
 nub run backend:vuln                   # No vulnerabilities found
 ```
 
-**当前预期结果**：全部通过，漏洞 0，集成测试 31/31，单元测试 218/218。
+**当前预期结果**：全部通过，漏洞 0，集成测试 37/37，单元测试 228/228。
+
+静态检查（本次审视引入，建议纳入常规链路）：
+
+```powershell
+cd backend
+go install honnef.co/go/tools/cmd/staticcheck@latest
+go install golang.org/x/tools/cmd/deadcode@latest
+& "$env:GOPATH\bin\staticcheck.exe" ./...   # 应为 0
+& "$env:GOPATH\bin\deadcode.exe" -test ./... # 应为 0
+```

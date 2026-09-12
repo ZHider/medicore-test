@@ -22,6 +22,9 @@ type fakeQueue struct {
 
 	groupErr   error
 	groupCalls int
+	// groupDeadCtx 记录"调用时 ctx 已经失效"的次数。
+	// 它为 0 才说明重建消费者组真的能成功——只数调用次数是测不出这个 bug 的。
+	groupDeadCtx int
 
 	// readResults 按顺序返回；用完后返回空
 	readResults [][]redis.XMessage
@@ -45,10 +48,19 @@ func newFakeQueue() *fakeQueue {
 	return &fakeQueue{deliveryCounts: map[string]int64{}}
 }
 
-func (f *fakeQueue) EnsureGroup(context.Context) error {
+// EnsureGroup 检查 ctx 是否仍然有效。
+//
+// 这不是多余的严格：真实实现会把这个 ctx 传给 XGroupCreateMkStream，
+// 而调用方曾经复用了一个**已经 cancel** 的 context，导致重建消费者组永远失败。
+// fake 若忽略 ctx 就永远测不出这类 bug（见 TestLoop_RecreatesMissingConsumerGroup）。
+func (f *fakeQueue) EnsureGroup(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.groupCalls++
+	if err := ctx.Err(); err != nil {
+		f.groupDeadCtx++
+		return err
+	}
 	return f.groupErr
 }
 
@@ -56,6 +68,12 @@ func (f *fakeQueue) ensureGroupCalls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.groupCalls
+}
+
+func (f *fakeQueue) ensureGroupDeadCtx() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.groupDeadCtx
 }
 
 func (f *fakeQueue) Read(ctx context.Context, _ string, _ int, _ time.Duration) ([]redis.XMessage, error) {
@@ -360,6 +378,12 @@ func TestLoop_RecreatesMissingConsumerGroup(t *testing.T) {
 	require.Eventually(t, func() bool { return q.ensureGroupCalls() >= 2 },
 		3*time.Second, 20*time.Millisecond,
 		"Start 时建组一次，检测到 NOGROUP 后应再次建组")
+
+	// 关键：必须断言重建时 ctx 还有效。
+	// 曾经的实现复用了已被 cancel 的 context，EnsureGroup 每次都返回
+	// context.Canceled —— 但"调用次数 >= 2"依然成立，测试照样绿。
+	assert.Zero(t, q.ensureGroupDeadCtx(),
+		"重建消费者组时 ctx 不应已失效，否则恢复路径形同虚设")
 }
 
 // IsNoGroupError 只认 redis.Error 类型：普通 error 即使文案含 NOGROUP 也不应误判，

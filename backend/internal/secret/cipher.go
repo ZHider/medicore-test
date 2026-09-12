@@ -1,4 +1,4 @@
-// Package crypto 提供敏感字段的加密与摘要工具（spec §2.2）。
+// Package secret 提供敏感字段的加密与摘要工具（spec §2.2）。
 //
 // 设计要点：
 //   - 手机号/身份证用 AES-256-GCM 加密存储，密文格式为 nonce(12B) || ciphertext+tag。

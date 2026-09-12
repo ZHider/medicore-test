@@ -16,6 +16,13 @@ const (
 	MaxPageSize     = 100
 )
 
+// APITimeLayout 是所有接口返回时间字符串时使用的统一格式。
+//
+// 必须统一：若某个接口直接序列化 time.Time，会得到 RFC3339（带时区偏移，
+// 如 2026-09-13T00:52:00+08:00），前端就得为这一个字段单独写解析分支。
+// 放在 model 而不是某个 service 里，是因为 handler 也需要它来格式化响应。
+const APITimeLayout = "2006-01-02 15:04:05"
+
 // CursorPage 是所有列表接口的统一分页响应。
 type CursorPage[T any] struct {
 	Items []T `json:"items"`

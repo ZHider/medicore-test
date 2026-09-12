@@ -165,8 +165,40 @@ func TestAudit_DeniedRequestIsRecorded(t *testing.T) {
 	token, _ := registerPatient(t)
 	call(t, request{method: "GET", path: "/api/v1/admin/audit-logs", token: token})
 
-	row := waitForAudit(t, "resource = ? AND status_code = ?", "admin", http.StatusForbidden)
+	// 资源名必须是 audit-logs 而不是 admin。
+	// 曾经的 bug：Describe 取版本段之后的第 1 段，/api/v1/admin/* 全被记成
+	// resource=admin，三个管理端点按资源聚合后混成一条。
+	// 这个用例原先断言的正是那个错误值，属"测试把 bug 固化下来"。
+	row := waitForAudit(t, "resource = ? AND status_code = ?", "audit-logs", http.StatusForbidden)
 	assert.Equal(t, "view", row.Action)
+}
+
+// 三个管理端点必须能被审计按资源区分开。
+//
+// 仅断言"有一条记录"是不够的：resource 全塌成 admin 时也满足。
+func TestAudit_AdminRoutesAreDistinguishableByResource(t *testing.T) {
+	clearRateLimits(t)
+	adminToken := mintToken(t, 910002, "admin")
+
+	// 触发三条路径不同的管理请求。
+	//
+	// 这里刻意用一个**不存在的**数据源：本用例只关心审计怎么推导资源名，
+	// 真跑一次同步会有副作用——它会创建排班，让后面 TestSync_ManualTriggerIsIdempotent
+	// 的"应新增排班"断言失效（踩过一次）。
+	call(t, request{method: "GET", path: "/api/v1/admin/audit-logs", token: adminToken})
+	call(t, request{method: "GET", path: "/api/v1/admin/sync-logs", token: adminToken})
+	call(t, request{method: "POST", path: "/api/v1/admin/sync/unknown-source", token: adminToken})
+
+	for _, want := range []string{"audit-logs", "sync-logs", "sync"} {
+		row := waitForAudit(t, "resource = ?", want)
+		assert.Equal(t, want, row.Resource)
+	}
+
+	// 不应存在 resource=admin 的记录：它是权限域，不是资源
+	var n int64
+	require.NoError(t, mustDB(t).Raw(
+		"SELECT COUNT(*) FROM audit_logs WHERE resource = 'admin'").Scan(&n).Error)
+	assert.Zero(t, n, "权限域不应被当成资源名")
 }
 
 func TestCatalog_DepartmentsDoctorsSchedules(t *testing.T) {

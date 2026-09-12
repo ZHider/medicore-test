@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"go.uber.org/zap"
 
@@ -13,9 +14,6 @@ import (
 	"github.com/medicore/backend/internal/model"
 	"github.com/medicore/backend/internal/repository"
 )
-
-// timeLayout 是返回给客户端的时间格式。
-const timeLayout = "2006-01-02 15:04:05"
 
 // Submit 结束对话并触发异步结构化总结（spec §7.2 + 决策 #8）。
 //
@@ -135,12 +133,9 @@ func (s *PreconsultService) authorizeReport(
 		return nil
 
 	case access.IsDoctor():
-		doctorID, dErr := s.doctors.FindIDByUserID(ctx, access.UserID)
-		if errors.Is(dErr, repository.ErrNotFound) {
-			return apperr.New(errcode.ErrForbidden, "当前账号没有医生档案")
-		}
+		doctorID, dErr := resolveDoctorID(ctx, s.doctors, access.UserID)
 		if dErr != nil {
-			return apperr.Wrap(errcode.ErrInternal, "查询医生档案失败", dErr)
+			return dErr
 		}
 		if appt.DoctorID != doctorID {
 			return apperr.New(errcode.ErrNotOwner, "无权查看非本人接诊患者的预问诊报告")
@@ -186,8 +181,11 @@ func (s *PreconsultService) SummarizeReport(ctx context.Context, reportID uint64
 
 	var conversation []llm.Message
 	if err := json.Unmarshal([]byte(report.Conversation), &conversation); err != nil {
-		// 对话数据损坏：这是代码/数据问题，重投也不会变好，直接标记失败
-		s.saveFailure(ctx, reportID, "对话数据损坏，无法生成总结")
+		// 对话数据损坏：这是代码/数据问题，重投也不会变好，直接标记失败。
+		// 落库失败时要返回错误，让 worker 把消息转入死信而不是当作已处理。
+		if fErr := s.saveFailure(ctx, reportID, "对话数据损坏，无法生成总结"); fErr != nil {
+			return fmt.Errorf("mark report failed: %w", fErr)
+		}
 		return nil
 	}
 
@@ -225,12 +223,15 @@ func (s *PreconsultService) SummarizeReport(ctx context.Context, reportID uint64
 //
 // 必须做这一步：否则报告会永远停在 processing，
 // 对客户端来说与"正在处理"无法区分，医生会一直等一个不会来的结果。
+//
+// 必须**把错误返回出去**：worker 的死信路径要靠它判断报告是否真的被标记。
+// 曾经这里无条件 return nil，落库失败只写日志，于是 worker 以为标记成功，
+// 报告却留在 processing —— 恰好是这段代码要避免的那个状态。
 func (s *PreconsultService) FailReport(ctx context.Context, reportID uint64, reason string) error {
-	s.saveFailure(ctx, reportID, reason)
-	return nil
+	return s.saveFailure(ctx, reportID, reason)
 }
 
-func (s *PreconsultService) saveFailure(ctx context.Context, reportID uint64, reason string) {
+func (s *PreconsultService) saveFailure(ctx context.Context, reportID uint64, reason string) error {
 	row := repository.SummaryOutcomeRow{
 		Status:       model.AIReportStatusFailed,
 		Attempts:     1,
@@ -239,7 +240,9 @@ func (s *PreconsultService) saveFailure(ctx context.Context, reportID uint64, re
 	if err := s.reports.SaveOutcome(ctx, reportID, row); err != nil {
 		s.log.Error("save summary failure state failed",
 			zap.Uint64("report_id", reportID), zap.Error(err))
+		return fmt.Errorf("save summary failure state: %w", err)
 	}
+	return nil
 }
 
 // buildReportView 把报告实体转成客户端视图。
@@ -251,7 +254,7 @@ func buildReportView(report *model.AIReport) *model.AIReportView {
 		Fallback:      report.Fallback,
 		LLMModel:      report.LLMModel,
 		PromptVersion: report.PromptVersion,
-		CreatedAt:     report.CreatedAt.Format(timeLayout),
+		CreatedAt:     report.CreatedAt.Format(model.APITimeLayout),
 	}
 
 	if report.StructuredRaw != nil && *report.StructuredRaw != "" {
@@ -264,7 +267,7 @@ func buildReportView(report *model.AIReport) *model.AIReportView {
 		view.ErrorMessage = *report.ErrorMessage
 	}
 	if report.FinishedAt != nil {
-		view.FinishedAt = report.FinishedAt.Format(timeLayout)
+		view.FinishedAt = report.FinishedAt.Format(model.APITimeLayout)
 	}
 	return view
 }

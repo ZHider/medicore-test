@@ -34,6 +34,7 @@ type fakeAppointmentStore struct {
 	checkInErr   error
 	queueRows    []model.QueueItem
 	queueErr     error
+	queueCalls   int
 	// 供预问诊归属校验
 	appointmentByID *model.Appointment
 	findByIDErr     error
@@ -121,6 +122,7 @@ func (f *fakeAppointmentStore) CheckIn(context.Context, uint64, uint64) (*model.
 }
 
 func (f *fakeAppointmentStore) ListQueue(context.Context, uint64) ([]model.QueueItem, error) {
+	f.queueCalls++
 	if f.queueErr != nil {
 		return nil, f.queueErr
 	}

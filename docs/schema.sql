@@ -267,7 +267,6 @@ CREATE TABLE audit_logs (
   latency_ms  INT             NOT NULL,
   client_ip   VARCHAR(45)     NULL,
   user_agent  VARCHAR(255)    NULL,
-  detail      JSON            NULL,
   created_at  DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_trace (trace_id),
