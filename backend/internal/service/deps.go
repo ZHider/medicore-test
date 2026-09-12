@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/medicore/backend/internal/model"
+	"github.com/medicore/backend/internal/repository"
 )
 
 // 本包按 Go 的惯例「接口由使用方定义」声明所需的最小能力接口，
@@ -54,6 +55,41 @@ type doctorStore interface {
 
 // scheduleStore 是排班读取能力。
 type scheduleStore interface {
+	FindByID(ctx context.Context, id uint64) (*model.Schedule, error)
 	ListByDepartmentDate(ctx context.Context, departmentID uint64, date time.Time, cursor uint64, limit int) ([]model.ScheduleListItem, error)
 	ListByDoctorRange(ctx context.Context, doctorID uint64, from, to time.Time, cursor uint64, limit int) ([]model.ScheduleListItem, error)
+}
+
+// stockStore 是 Redis 号源计数能力。
+type stockStore interface {
+	EnsureLoaded(ctx context.Context, s *model.Schedule) error
+	Decrement(ctx context.Context, scheduleID uint64, qty int) (repository.StockResult, error)
+	Release(ctx context.Context, scheduleID uint64, qty, capacity int) (int, error)
+}
+
+// idempotencyStore 是抢号幂等键能力。
+type idempotencyStore interface {
+	Acquire(ctx context.Context, userID uint64, key string) (bool, uint64, error)
+	Complete(ctx context.Context, userID uint64, key string, appointmentID uint64) error
+	Release(ctx context.Context, userID uint64, key string) error
+}
+
+// appointmentStore 是面向患者的预约操作。
+type appointmentStore interface {
+	Create(ctx context.Context, in repository.CreateAppointmentInput) (*model.Appointment, error)
+	FindByUserAndIdempotencyKey(ctx context.Context, userID uint64, key string) (*model.Appointment, error)
+	FindItemByID(ctx context.Context, userID, appointmentID uint64) (*model.AppointmentItem, error)
+	ListByUserCursor(ctx context.Context, userID, cursor uint64, limit int) ([]model.AppointmentItem, error)
+	Cancel(ctx context.Context, userID, appointmentID uint64, reason string) (*repository.StateChangeResult, error)
+	CheckIn(ctx context.Context, userID, appointmentID uint64) (*model.Appointment, error)
+	ListQueue(ctx context.Context, scheduleID uint64) ([]model.QueueItem, error)
+}
+
+// appointmentJanitor 是超时清理能力。
+//
+// 与 appointmentStore 分开声明：定时任务只需要这两个方法，
+// 若混在一起，测试定时任务就得实现全部 7 个方法。
+type appointmentJanitor interface {
+	ListExpiredPending(ctx context.Context, now time.Time, limit int) ([]model.Appointment, error)
+	Expire(ctx context.Context, appointmentID uint64) (*repository.StateChangeResult, error)
 }

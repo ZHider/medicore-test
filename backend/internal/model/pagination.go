@@ -24,12 +24,23 @@ type CursorPage[T any] struct {
 	HasMore    bool   `json:"has_more"`
 }
 
+// NonNil 保证切片序列化为 [] 而不是 null。
+//
+// Go 的 nil 切片会被编码成 JSON null，而前端处理 null 与 [] 的代码路径
+// 往往不同（前者需要额外判空）。在响应边界统一成 [] 可以省掉一类空指针问题。
+func NonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
+}
+
 // NewCursorPage 由"多取一条"的查询结果构造分页响应。
 //
 // 仓储层固定查询 limit+1 条：多出的那一条只用于判断是否还有下一页，
 // 不会返回给客户端。这样无需额外发一次 COUNT 查询。
 func NewCursorPage[T any](rows []T, limit int, idOf func(T) uint64) CursorPage[T] {
-	page := CursorPage[T]{Items: rows}
+	page := CursorPage[T]{Items: NonNil(rows)}
 
 	if len(rows) > limit {
 		page.HasMore = true

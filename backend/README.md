@@ -113,6 +113,16 @@ MEDICORE_MYSQL_PASSWORD=medicore123 go run ./cmd/server
 
 全部需要登录（院内数据不应匿名可见）。
 
+### 预约与抢号（M4）
+
+| Method | Path | 角色 | 说明 |
+|---|---|---|---|
+| POST | `/api/v1/appointments` | patient | 抢号（幂等键 + Lua 扣减），**限流 10/分钟按用户** |
+| GET | `/api/v1/appointments?cursor=&size=` | patient | 我的预约，游标分页 |
+| POST | `/api/v1/appointments/:id/cancel` | patient | 取消并回补号源 |
+| POST | `/api/v1/appointments/:id/checkin` | patient | 签到，按签到顺序分配就诊序号 |
+| GET | `/api/v1/schedules/:id/queue` | doctor/admin | 候诊队列（按序号升序） |
+
 ### RBAC
 
 `middleware.RequireRole(model.RoleAdmin, ...)` 挂在 JWT 之后使用。
@@ -134,14 +144,72 @@ MEDICORE_MYSQL_PASSWORD=medicore123 go run ./cmd/server
 | 限流 | Redis 令牌桶 Lua 脚本（原子）；限流器故障时 fail-open 并留痕 |
 | 错误包装 | `apperr` 携带错误码向上传递，handler 统一转换（spec §3.2 铁律 2） |
 
+## 抢号设计（spec §7.1，含两处修正）
+
+```
+幂等占用 → 预热号源 → Redis 原子扣减 → MySQL 事务落库 → 记录幂等结果
+                                    ↓ 失败
+                              回补 Redis 号源 + 释放幂等键
+```
+
+**修正 1：Redis 键不存在不再等同于"号源不足"。** spec 的原始 Lua 在键不存在时返回 0，
+而 0 表示号源不足——这会让 Redis 冷启动或键过期后的**所有**抢号全部失败，
+且错误提示是"号源不足"，排查时极具误导性。现改为返回独立的 `-1`，
+服务层据此先预热再重试一次。
+
+**修正 2：幂等键用"比对删除"释放。** 失败清理时若直接 `DEL`，
+会把已完成的记录一并删掉——请求 A 成功后请求 B 超时清理，
+一次无条件 DEL 就让后续重放再也查不到结果。改为仅当值仍是"处理中"占位值时才删除。
+
+其他关键点：
+
+- **预热必须用 `SETNX`。** 若用 `SET` 覆盖已存在的键，会把并发请求已扣减的号源"还回去"，直接造成超卖。
+- **回补以容量为上限，且键不存在时不创建。** 否则 `INCRBY` 会凭空造出值为 qty 的键，制造超卖。
+- **MySQL 扣减用单条原子 UPDATE**（`WHERE id=? AND remaining>0`）而非"读 version 再比对"。
+  单条 UPDATE 在 InnoDB 行锁下已是原子，`remaining>0` 即充分条件；后者要多一次 SELECT 加重试循环。
+  表上的 `CHECK (remaining >= 0)` 是最后一道防线。
+- **超时释放是幂等闸门。** 用"带状态条件的 UPDATE"（`WHERE status='pending'`）判断是否真的发生了状态跃迁，
+  多实例并发扫描同一批订单时只有一个会回补号源。
+- **事务内不含网络调用**（spec §3.2 铁律 3）：Redis 扣减在进入事务之前完成。
+
+### 候诊队列刻意不脱敏
+
+队列会返回患者姓名原文。医生必须能识别面前的患者，把姓名打成"张*"会让队列失去意义；
+该接口仅对 doctor/admin 开放。这是 spec §2.2 脱敏规则的**有意例外**。
+
+## 并发压测
+
+```bash
+nub run backend:loadtest -- -users 200 -concurrency 100
+```
+
+**为什么不直接用 hey/wrk**：这两个工具对所有请求发同一个 token，
+而同一用户对同一号源只能持有一个进行中预约（`uk_active`），
+重复请求只会得到冲突，根本触达不到并发扣减路径。
+`cmd/loadtest` 先批量准备患者账号、为每个账号签发自有权杖，再并发抢同一个号源。
+
+实测结果（200 患者抢 20 个号源，并发度 100）：
+
+```
+成功抢到      : 20
+号源不足      : 180
+耗时          : 172ms
+MySQL 余号    : 20 -> 0
+Redis 号源键  : 存在=true 值=0
+✅ 无超卖：成功次数、MySQL 余号、Redis 号源三者自洽
+```
+
+工具结束时会自动核对三方数据（成功次数 / MySQL remaining / Redis 号源键）是否自洽，
+任何一项对不上都会以非零退出码失败。
+
 ## 模块进度
 
 - [x] **M1** 配置 / 日志 / 中间件链 / 健康检查 / 分层骨架 / dev compose
 - [x] **M2** 认证鉴权：AES-GCM + HMAC 摘要 + bcrypt + JWT 双令牌 + Redis 刷新轮换 + RBAC + 令牌桶限流
 - [x] **M3** 科室 / 医生（多对多）/ 排班查询 + 游标分页 + Redis 缓存（含缓存击穿防护）
-- [ ] M4 抢号（幂等 + Lua + 乐观锁 + cron 释放 + 签到队列）
+- [x] **M4** 抢号（幂等 + Lua 原子扣减 + 预热自愈 + 乐观条件 + cron 超时释放 + 签到队列）
 - [ ] M5 AI 预问诊（Mock LLM + SSE + Stream 异步总结 + Schema 降级）
-- [ ] M6 病历 / 处方 / 审计 / HIS 同步
+- [ ] M6 病历 / 处方 / 审计 / HIS 同步 / 对账任务
 
 ## 演示数据
 
@@ -183,17 +251,21 @@ GET ...&cursor=57
 nub run backend:test      # go test ./...
 ```
 
-67 个用例，service 层不依赖任何外部服务（注入内存实现）：
+87 个用例，service 层不依赖任何外部服务（注入内存实现）：
 
 | 包 | 覆盖内容 |
 |---|---|
 | `secret` | 加解密往返、随机 nonce、篡改检测、摘要确定性、bcrypt 边界 |
 | `jwt` | 签发解析、过期、错密钥、错签发方、**alg=none 伪造拒绝** |
 | `mask` | 手机号/身份证/姓名脱敏，且结果不等于原文 |
-| `config` | 密钥非空/长度/可预测性（单一字符、短周期、升序、占位词）、生产守卫 |
+| `config` | 密钥非空/长度/可预测性（单一字符、短周期、升序、占位词） |
 | `model` | 游标解析、size 收敛、分页标志与探测行裁剪 |
 | `middleware` | JWT 缺失/非法/过期三态、RBAC 放行与拒绝、无令牌优先 401 |
-| `service` | 认证全流程 + 时序防护；科室不存在返回 404、多对多详情、分页传递、错误包装为 500 且不泄漏内部细节 |
+| `service` | 认证全流程 + 时序防护；目录查询；**抢号全部分支**（幂等重放、在途拒绝、号源不足、预热重试、数据库失败回补、唯一键恢复、排班不存在/已关闭） |
+
+抢号部分最关键的用例是 **`TestGrab_DatabaseFailureReleasesRedisStock`**：
+它断言"Redis 已扣减但 MySQL 回滚"时必须回补号源。若不回补，
+号源会凭空蒸发，表现为"总号源 20 却越来越难抢"这种极难排查的现象。
 
 时序防护用例经过反向验证：临时移除防护后该用例失败（比值 0.00），确认其确实能捕获回归。
 

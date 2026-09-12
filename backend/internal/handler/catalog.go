@@ -25,7 +25,7 @@ func (h *CatalogHandler) ListDepartments(c *gin.Context) {
 		response.FailErr(c, err)
 		return
 	}
-	response.OK(c, gin.H{"items": items})
+	response.OK(c, gin.H{"items": model.NonNil(items)})
 }
 
 // ListDoctorsByDepartment 返回科室下的医生列表（服务端走 Redis 缓存）。
@@ -40,7 +40,7 @@ func (h *CatalogHandler) ListDoctorsByDepartment(c *gin.Context) {
 		response.FailErr(c, err)
 		return
 	}
-	response.OK(c, gin.H{"items": items})
+	response.OK(c, gin.H{"items": model.NonNil(items)})
 }
 
 // DoctorDetail 返回医生详情及其所属科室。

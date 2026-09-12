@@ -7,15 +7,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/medicore/backend/internal/metrics"
 )
 
-// 独立 registry 而非 prometheus.DefaultRegisterer：
-// 避免测试或多次初始化时重复注册 panic，也让 /metrics 只暴露本项目关心的指标。
 var (
-	registry = prometheus.NewRegistry()
-
 	httpRequestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "http_requests_total",
 		Help: "HTTP 请求总数。",
@@ -36,19 +32,7 @@ var (
 )
 
 func init() {
-	registry.MustRegister(
-		httpRequestsTotal,
-		httpRequestDuration,
-		rateLimitErrorsTotal,
-		collectors.NewGoCollector(),
-		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-	)
-}
-
-// Registry 暴露注册表，供后续模块注册业务指标
-// （spec §9.2：appointment_grab_total、llm_calls_total 等）。
-func Registry() prometheus.Registerer {
-	return registry
+	metrics.Register(httpRequestsTotal, httpRequestDuration, rateLimitErrorsTotal)
 }
 
 // Metrics 采集请求计数与耗时。path 使用路由模板（FullPath）而非真实路径，避免高基数。
@@ -69,5 +53,5 @@ func Metrics() gin.HandlerFunc {
 
 // MetricsHandler 返回 /metrics 的 HTTP handler。
 func MetricsHandler() http.Handler {
-	return promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
+	return metrics.Handler()
 }

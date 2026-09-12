@@ -2,15 +2,19 @@
 package router
 
 import (
+	"strconv"
+
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
+	"github.com/medicore/backend/internal/authctx"
 	"github.com/medicore/backend/internal/config"
 	"github.com/medicore/backend/internal/errcode"
 	"github.com/medicore/backend/internal/handler"
 	"github.com/medicore/backend/internal/jwt"
 	"github.com/medicore/backend/internal/middleware"
+	"github.com/medicore/backend/internal/model"
 	"github.com/medicore/backend/internal/response"
 	"github.com/medicore/backend/internal/service"
 )
@@ -18,13 +22,14 @@ import (
 // Deps 是路由装配所需的依赖。
 // 用结构体承载：后续模块只需在此加字段，不必改 New 的签名。
 type Deps struct {
-	Config     *config.Config
-	Logger     *zap.Logger
-	Redis      *redis.Client
-	Health     *service.HealthService
-	Auth       *service.AuthService
-	Catalog    *service.CatalogService
-	JWTManager *jwt.Manager
+	Config       *config.Config
+	Logger       *zap.Logger
+	Redis        *redis.Client
+	Health       *service.HealthService
+	Auth         *service.AuthService
+	Catalog      *service.CatalogService
+	Appointments *service.AppointmentService
+	JWTManager   *jwt.Manager
 }
 
 // New 构建 gin.Engine。
@@ -51,14 +56,9 @@ func New(d Deps) *gin.Engine {
 		middleware.Metrics(),
 	)
 
-	// 运维端点：不鉴权、不限流
-	healthHandler := handler.NewHealthHandler(d.Health)
-	r.GET("/healthz", healthHandler.Live)
-	r.GET("/readyz", healthHandler.Ready)
-	r.GET("/metrics", gin.WrapH(middleware.MetricsHandler()))
-
-	registerAuthRoutes(r, d)
-	registerCatalogRoutes(r, d)
+	registerOpsRoutes(r, d)
+	registerPublicRoutes(r, d)
+	registerSecuredRoutes(r, d)
 
 	// 未匹配路由/方法也必须返回统一信封，否则客户端会拿到 gin 的纯文本 404，
 	// 无法按 code 字段分支处理（spec §3.3）。
@@ -72,12 +72,19 @@ func New(d Deps) *gin.Engine {
 	return r
 }
 
-func registerAuthRoutes(r *gin.Engine, d Deps) {
-	h := handler.NewAuthHandler(d.Auth)
+// registerOpsRoutes 挂载运维端点：不鉴权、不限流。
+func registerOpsRoutes(r *gin.Engine, d Deps) {
+	h := handler.NewHealthHandler(d.Health)
+	r.GET("/healthz", h.Live)
+	r.GET("/readyz", h.Ready)
+	r.GET("/metrics", gin.WrapH(middleware.MetricsHandler()))
+}
 
+// registerPublicRoutes 挂载无需登录的端点。
+func registerPublicRoutes(r *gin.Engine, d Deps) {
+	h := handler.NewAuthHandler(d.Auth)
 	auth := r.Group("/api/v1/auth")
 
-	// 公开端点
 	auth.POST("/register", h.Register)
 	auth.POST("/refresh", h.Refresh)
 	// 登录限流：spec §9.3 要求 5 次/分钟。
@@ -87,26 +94,61 @@ func registerAuthRoutes(r *gin.Engine, d Deps) {
 		Capacity:        5,
 		RefillPerSecond: 5.0 / 60.0,
 	}), h.Login)
-
-	// 需要登录的端点
-	secured := auth.Group("")
-	secured.Use(middleware.JWT(d.JWTManager))
-	secured.POST("/logout", h.Logout)
-	secured.GET("/me", h.Me)
 }
 
-// registerCatalogRoutes 挂载科室 / 医生 / 排班查询（spec §6.1，角色=登录）。
-//
-// 整个分组统一要求登录：这些是院内数据，不应匿名可见。
-func registerCatalogRoutes(r *gin.Engine, d Deps) {
+// registerSecuredRoutes 挂载需要登录的端点。
+// 统一在一个分组上加 JWT，避免逐条路由重复声明。
+func registerSecuredRoutes(r *gin.Engine, d Deps) {
+	secured := r.Group("/api/v1")
+	secured.Use(middleware.JWT(d.JWTManager))
+
+	registerAuthSecured(secured, d)
+	registerCatalog(secured, d)
+	registerAppointments(secured, d)
+}
+
+func registerAuthSecured(g *gin.RouterGroup, d Deps) {
+	h := handler.NewAuthHandler(d.Auth)
+	auth := g.Group("/auth")
+	auth.POST("/logout", h.Logout)
+	auth.GET("/me", h.Me)
+}
+
+// registerCatalog 挂载科室 / 医生 / 排班查询（spec §6.1，角色=登录）。
+func registerCatalog(g *gin.RouterGroup, d Deps) {
 	h := handler.NewCatalogHandler(d.Catalog)
 
-	v1 := r.Group("/api/v1")
-	v1.Use(middleware.JWT(d.JWTManager))
+	g.GET("/departments", h.ListDepartments)
+	g.GET("/departments/:id/doctors", h.ListDoctorsByDepartment)
+	g.GET("/departments/:id/schedules", h.ListSchedulesByDepartment)
+	g.GET("/doctors/:id", h.DoctorDetail)
+	g.GET("/doctors/:id/schedules", h.ListSchedulesByDoctor)
+}
 
-	v1.GET("/departments", h.ListDepartments)
-	v1.GET("/departments/:id/doctors", h.ListDoctorsByDepartment)
-	v1.GET("/departments/:id/schedules", h.ListSchedulesByDepartment)
-	v1.GET("/doctors/:id", h.DoctorDetail)
-	v1.GET("/doctors/:id/schedules", h.ListSchedulesByDoctor)
+// registerAppointments 挂载抢号相关端点。
+func registerAppointments(g *gin.RouterGroup, d Deps) {
+	h := handler.NewAppointmentHandler(d.Appointments)
+
+	// 抢号限流：spec §9.3 要求 10 次/分钟。
+	// 按用户维度限流（此时 JWT 已执行），而不是按 IP——
+	// 同一 NAT 后的多名患者不应互相影响。
+	grabLimit := middleware.RateLimit(d.Redis, middleware.RateLimitOptions{
+		KeyPrefix:       "rl:grab",
+		Capacity:        10,
+		RefillPerSecond: 10.0 / 60.0,
+		KeyFunc: func(c *gin.Context) string {
+			return strconv.FormatUint(authctx.MustUserID(c), 10)
+		},
+	})
+
+	patient := middleware.RequireRole(model.RolePatient)
+
+	g.POST("/appointments", patient, grabLimit, h.Grab)
+	g.GET("/appointments", patient, h.ListMine)
+	g.POST("/appointments/:id/cancel", patient, h.Cancel)
+	g.POST("/appointments/:id/checkin", patient, h.CheckIn)
+
+	// 候诊队列供医生与管理员查看
+	g.GET("/schedules/:id/queue",
+		middleware.RequireRole(model.RoleDoctor, model.RoleAdmin), h.Queue)
 }

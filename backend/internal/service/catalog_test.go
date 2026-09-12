@@ -69,8 +69,9 @@ func (f *fakeDoctorStore) ListDepartmentsOfDoctor(context.Context, uint64) ([]mo
 }
 
 type fakeScheduleStore struct {
-	rows []model.ScheduleListItem
-	err  error
+	rows       []model.ScheduleListItem
+	scheduleBy *model.Schedule
+	err        error
 
 	// 记录最后一次调用的参数，供断言服务层如何传参
 	lastDeptID uint64
@@ -79,6 +80,17 @@ type fakeScheduleStore struct {
 	lastTo     time.Time
 	lastCursor uint64
 	lastLimit  int
+}
+
+// FindByID 供抢号流程使用；目录查询本身不调用它。
+func (f *fakeScheduleStore) FindByID(context.Context, uint64) (*model.Schedule, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.scheduleBy == nil {
+		return nil, repository.ErrNotFound
+	}
+	return f.scheduleBy, nil
 }
 
 // simulate 复刻仓储层"最多返回 limit+1 条"的约定。

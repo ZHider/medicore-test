@@ -22,6 +22,7 @@ import (
 	"github.com/medicore/backend/internal/logger"
 	"github.com/medicore/backend/internal/repository"
 	"github.com/medicore/backend/internal/router"
+	"github.com/medicore/backend/internal/scheduler"
 	"github.com/medicore/backend/internal/secret"
 	"github.com/medicore/backend/internal/service"
 )
@@ -115,15 +116,34 @@ func run() error {
 		Schedules:   repository.NewScheduleRepo(db),
 	})
 
-	engine := router.New(router.Deps{
-		Config:     cfg,
-		Logger:     log,
-		Redis:      rdb,
-		Health:     healthSvc,
-		Auth:       authSvc,
-		Catalog:    catalogSvc,
-		JWTManager: jwtManager,
+	// 预约与抢号
+	appointmentRepo := repository.NewAppointmentRepo(db)
+	appointmentSvc := service.NewAppointmentService(service.AppointmentDeps{
+		Appointments: appointmentRepo,
+		Janitor:      appointmentRepo,
+		Schedules:    repository.NewScheduleRepo(db),
+		Stock:        repository.NewStockRepo(rdb),
+		Idempotency:  repository.NewIdempotencyRepo(rdb),
+		Log:          log,
 	})
+
+	engine := router.New(router.Deps{
+		Config:       cfg,
+		Logger:       log,
+		Redis:        rdb,
+		Health:       healthSvc,
+		Auth:         authSvc,
+		Catalog:      catalogSvc,
+		Appointments: appointmentSvc,
+		JWTManager:   jwtManager,
+	})
+
+	// 定时任务：释放超时未确认的预约
+	sched := scheduler.New(log, appointmentSvc)
+	if err := sched.Start(); err != nil {
+		return fmt.Errorf("start scheduler: %w", err)
+	}
+	defer sched.Stop()
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.App.Port),
