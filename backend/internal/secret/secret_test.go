@@ -120,7 +120,10 @@ func TestPassword_HashAndVerify(t *testing.T) {
 }
 
 func TestPassword_RejectsOver72Bytes(t *testing.T) {
-	// bcrypt 会静默截断超过 72 字节的输入，必须显式拒绝，否则长密码给出虚假安全感。
+	// bcrypt 的输入上限是 72 字节。这里的判据是"两侧都必须拒绝"，而不是
+	// "库会静默截断"—— 实测 x/crypto v0.48.0 的 GenerateFromPassword 会返回
+	// ErrPasswordTooLong（不截断），但**比对路径不做长度检查**。
+	// 所以本用例守护的是我们自己的守卫，不是库的行为。
 	long := strings.Repeat("a", 73)
 	_, err := HashPassword(long, MinBcryptCost)
 	assert.Error(t, err)

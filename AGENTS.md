@@ -180,6 +180,7 @@ MediCore/
 │   ├── FIXES.md             # ★ 缺陷与改进总账 + 当前健康指标（**向上汇报看这份**）
 │   ├── PITFALLS.md          # ★ 易错点总索引 + 诊断判据（**写代码前扫一眼**）
 │   ├── sql-optimization.md  # ★ SQL/索引实测：EXPLAIN + IGNORE INDEX 反向验证
+│   ├── ai-vibe-coding/      # ★ spec §10.3 交付物：WORKFLOW + 提示词指针 + 6 篇逐模块 review
 │   └── benchmark/           # ★ 性能基准报告（含复现命令与环境说明）
 ├── backend/
 │   ├── cmd/                 # server / genlocal / seed / loadtest
@@ -565,8 +566,8 @@ v1 用 `linters-settings` / `issues.exclude-rules`，v2 用 `version: "2"` +
 3. **注释要解释"为什么"，不是"是什么"。** 尤其是那些看起来"多此一举"的代码
    （`SETNX` 而非 `SET`、比对删除、`startStream` 延迟），都是在防具体的坑。
 
-4. **刻意偏离 spec 的地方必须标注理由。** 目前有 3 处（见 `docs/HANDOVER.md` §4），
-   都写在代码注释与 README 里，避免后人误以为是疏漏而"修正"回去。
+4. **刻意偏离 spec 的地方必须标注理由。** 目前有 6 处，
+   **逐条见 `docs/HANDOVER.md` §4（那里是唯一事实来源，本文档不复述以避免漂移）**。
 
 5. **修 spec 的 bug 是正当的。** 已修正 4 处 spec 缺陷（建表必失败的索引、
    冷启动全盘失败的 Lua、误删已完成记录的幂等释放、多对多后排班唯一键）。
@@ -592,7 +593,7 @@ v1 用 `linters-settings` / `issues.exclude-rules`，v2 用 `version: "2"` +
 |---|---|---|
 | **高** | 前端页面 | 仅有脚手架。spec §8 要求登录/挂号/AI 对话/医生工作台/管理看板（后端接口已全部就绪） |
 | **高** | 全栈 compose 编排 | 目前只有依赖服务的 compose，缺 nginx + 前后端镜像 |
-| 中 | AI Vibe Coding 交付物 | spec §10.3 要求 `docs/ai-vibe-coding/` + ≥5 篇 review。**当前一篇都没有**（G6 验收项） |
+| 中 | AI Vibe Coding 交付物 | **后端部分已完成**：`docs/ai-vibe-coding/`（WORKFLOW + prompts + **6 篇**逐模块 review，覆盖 M1–M6）。**遗留**：前端还没有页面，因此没有前端 review；review 的"遗留与未验证"节里记的缺口见各篇 §六 |
 | 中 | 性能证据文档 | `docs/benchmark/`（17 项基准）与 `docs/sql-optimization.md`（25 条查询实测 + 索引反向验证）**均已成型**。遗留：`sql-optimization.md` §4.4 记的 cron 扫描优化（当前代价可接受，触发条件已写明） |
 | 中 | **按角色横切复查** | **三角色已全部查完**：医生角色发现并修了 2 处规格缺口（`docs/MODULES.md` §6.7）；患者/管理员角色复查结论为**无新缺口**（逐端点证据见 `sql-optimization.md` 与 `MODULES.md`）。后续新增返回他人数据的端点时，仍按此清单扫一遍 |
 | 中 | `golangci-lint` 配置 | 见 §4 命令与仓库根 `.golangci.yml` |

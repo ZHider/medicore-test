@@ -34,17 +34,20 @@
 
 **后端功能完整**：29 条端点全部实现并实测，M1–M6 全部完成，spec G2/G3/G4 达成。
 
-**项目整体未完成** —— spec §12.2 的交付清单里还有三项，**都不属于后端**：
+**项目整体未完成** —— spec §12.2 的交付清单里还有两项，**都不属于后端**：
 
 | 未完成项 | 影响 |
 |---|---|
 | **前端页面**（spec §8：登录/挂号/AI 对话/医生工作台/管理看板） | G1「三角色全流程闭环」只完成了后端一半 —— 患者目前无法真正走完流程 |
 | **全栈 compose 编排**（nginx + 前后端镜像） | G5「一键起全栈」未达成；现有 `deploy/compose.dev.yml` 只起 mysql/redis |
-| `docs/ai-vibe-coding/`（WORKFLOW + prompts + ≥5 reviews） | G6 验收项，目录尚未创建 |
 
-**性能证据已补齐**：`docs/benchmark/`（17 项基准）与 `docs/sql-optimization.md`
-（25 条业务查询的 EXPLAIN / EXPLAIN ANALYZE 实测 + 3 组索引反向验证）。
-注意两份文档**口径不同、数字不可互相替代**，理由写在 `sql-optimization.md` §0。
+**已补齐的交付物**：
+
+| 项 | 内容 |
+|---|---|
+| 性能证据 | `docs/benchmark/`（17 项基准）+ `docs/sql-optimization.md`（25 条查询 EXPLAIN 实测 + 3 组 `IGNORE INDEX` 反向验证）。注意两份**口径不同、数字不可互相替代**，理由写在 `sql-optimization.md` §0 |
+| 代码质量证据 | `.golangci.yml`（v2，**0 issues**）+ `nub run backend:lint` + CI 关卡 |
+| **G6 AI Vibe Coding 留痕** | `docs/ai-vibe-coding/`：WORKFLOW + prompts 指针 + **6 篇**逐模块 review（M1–M6）。**性质是事后整理**，每篇标注来源；前端无页面故无前端 review |
 
 **所以："后端基本完成"成立；"项目完成"不成立。** 详见 `MODULES.md` §0.2。
 
@@ -182,6 +185,16 @@
 | L5 | 审计 `Describe` 把三个管理端点的 `resource` 全记成 `admin`，按资源聚合时混成一条 | 新增 `scopeSegments` 跳过权限域 |
 | L6 | `database-review.md` 把"由 service 复活软删除行"写成了已完成，**代码里根本没有**（无 `Unscoped()` / `deleted_at = NULL` / `.Delete()` 调用） | 如实改写 + 记入待办，并注明"加删除功能前必须先实现复活" |
 | L7 | 文档把管理端点写成 `/api/v1/audit-logs`（少了 `/admin/`），把已实现的同步端点列为待办 | 已修正，并立规：**路由清单以 `router.go` 或 gin 启动输出为准** |
+| L8 | **`secret/password.go` 把 bcrypt 的超长行为说成"会被静默截断"** —— 实测当前依赖 `x/crypto v0.48.0` 的 `GenerateFromPassword` 对 >72 字节**返回 `ErrPasswordTooLong`**，不截断；而**比对路径 `CompareHashAndPassword` 反倒不做长度检查**。原注释的理由写反了 | 改正两处注释（`password.go` + `secret_test.go`），并写明真实理由：生成侧是"与库版本无关的明确错误"，比对侧才是需要守卫的那一侧。**代码行为零改动** |
+| L9 | `HANDOVER.md` §4「刻意偏离 spec」表写着"共 3 处"，但**漏了"用 `nub run` 替代 Makefile"**（spec §11.2 明确要求 Makefile，而 `package.json` 描述与 `AGENTS.md` §2.7 都写了它） | 补全为 6 处，并把该表定为**唯一事实来源**；`CODE-REVIEW.md` §6.2 的复述改为指向，消除漂移面 |
+
+### 🟡 低：**未修但已记录**的缺口（本轮 review 发现）
+
+| # | 问题 | 为什么不修 / 何时该修 |
+|---|---|---|
+| N1 | **`errcode` 三张表（常量 / `messages` / `httpStatus`）的一致性无自动化守护** | 代码注释明确要求"必须同步改，漏改会让错误码落到未知错误/500"，但 `internal/errcode/` **没有测试文件**，这条规则目前只靠人记。**建议补一个测试**：遍历三张表的 key 集合断言三者相等。成本约 20 行 |
+| N2 | **HIS 同步不失效科室医生缓存** | 核实：`DepartmentDoctorsCacheKeys` 只在 `cmd/seed` 与测试里被调用，`service/sync.go` 对 cache/redis **零引用**。同步更新医生后，科室医生列表最坏 **5 分钟**内是旧的（由 TTL 兜底）。属已知取舍；若要即时生效，在同步收尾处调用该函数即可 |
+| N3 | 审计日志按时间范围查询的**隐含假设** | `sql-optimization.md` Q19（按 `created_at` 范围查）走 `PRIMARY` 而非 `idx_created` —— 这**依赖 `created_at` 与 `id` 同向增长**（审计只追加不更新），当前成立。**若将来引入回填/乱序写入，这个假设会被打破而查询悄悄变慢**，计划也会退化。记录备查 |
 
 ---
 
@@ -257,7 +270,8 @@ PING 也是 422 µs，**时间几乎全在传输上**。
 |---|---|---|
 | **CI** | `.github/workflows/ci.yml`，6 关卡按反馈速度排序 | ⚠️ **从未在 GitHub 真跑过**（仓库未 push） |
 | **静态检查** | `go vet` / `staticcheck` / `deadcode` 三者 0 告警；另新增 `.golangci.yml`（v2 格式，**实测 0 issues**）与一键入口 `nub run backend:lint` | ✅ |
-| **SQL 优化证据** | `docs/sql-optimization.md`：25 条查询的 EXPLAIN/EXPLAIN ANALYZE + 3 组 `IGNORE INDEX` 反向验证 | ✅ |
+| **SQL 优化** | `docs/sql-optimization.md`：25 条查询的 EXPLAIN/EXPLAIN ANALYZE + 3 组索引反向验证（`IGNORE INDEX`） | ✅ |
+| **AI Vibe Coding 留痕（G6）** | `docs/ai-vibe-coding/`：WORKFLOW + prompts 指针 + **6 篇**逐模块 review；每篇含 spec §10.2 的六项清单 | ✅ 后端部分 |
 | **Fuzz** | 11 目标，`backend/scripts/fuzz.sh` 遍历（目标从源码 grep，不维护硬编码列表） | ✅ 全部通过 |
 | **Benchmark** | 17 项，`docs/benchmark/` | ✅ |
 | **`-race`** | `backend/scripts/race.sh`（Docker），CI 上用 ubuntu 原生 gcc | ✅ 通过 |

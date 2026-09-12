@@ -231,13 +231,16 @@ go.mod require 行 68 条
 | 预约 | `POST/GET /appointments` `/appointments/:id/cancel` `/appointments/:id/checkin` `/schedules/:id/queue` |
 | AI | `/appointments/:id/preconsult/{chat,history,submit,report}` |
 
-### 6.2 三处刻意偏离 spec（均有代码注释与文档说明）
+### 6.2 刻意偏离 spec 的地方
 
-| # | spec 原文 | 实际实现 | 理由 |
-|---|---|---|---|
-| 1 | `phone_hash = SHA256(phone+salt)` | HMAC-SHA256(pepper, phone) | keyed hash 更稳；输出同为 64 位十六进制，兼容 `CHAR(64)` |
-| 2 | `internal/pkg/` 目录结构 | 工具包平铺于 `internal/` | `internal` 本身已阻止外部导入，`pkg` 是零语义的冗余层级 |
-| 3 | "repository 是唯一允许出现 GORM 的层" | `model` 的 PO 使用 `gorm.DeletedAt` | 换取 GORM 自动软删除过滤，避免手写条件遗漏（已踩过坑） |
+**本表已收敛：`HANDOVER.md` §4 是唯一事实来源，这里只做指向，不再复述条目。**
+
+> 早先这里复述过 3 条，结果与 `HANDOVER.md` §4 一起漏掉了"用 `nub run` 替代 Makefile"
+> （spec §11.2 明确要求 Makefile，而 `package.json` 描述与 `AGENTS.md` §2.7 都写了它）。
+> 复述即漂移 —— 现在偏离项条数已增至 **6 条**，逐条见 `docs/HANDOVER.md` §4。
+>
+> 上文 §6.2 曾经的三条（HMAC 手机号摘要 / 工具包平铺 / `gorm.DeletedAt`）仍在其中，
+> 编号未变（1–3）。
 
 ### 6.3 对 spec 缺陷的修正（4 处）
 

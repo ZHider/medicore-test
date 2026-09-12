@@ -694,7 +694,6 @@ fmt.Sprintf("IT%d", time.Now().UnixNano()%100000)   // 只有 10 万种取值
 
 | 项 | 说明 |
 |---|---|
-| `docs/ai-vibe-coding/` | spec §10.3 要求 WORKFLOW.md + prompts + **≥5 篇** review。**当前一篇都没有**（G6 验收项） |
 | 前端管理看板拉 `/metrics` | spec §8.1 要求 ECharts 渲染系统健康度 |
 | **软件供应链**：`golangci-lint` 未纳入 `go.mod` 工具依赖 | 已装本机 v2.13.2 并进 CI（`go install ...@v2.13.2`），但**版本号写在 `ci.yml` 里而不是 `go.mod` 的 `tool` 指令**。将来 Go 的 tool directive 或 `mise`/`aqua` 能统一管理时应收敛 |
 | `docs/sql-optimization.md` §4.4 的 cron 扫描 | 当前读 4000 行拿 200 条（1.48 ms）**可接受**，故未改。**触发条件已写明**：pending 占比降到 1% 以下时应把 `ORDER BY id` 改为 `ORDER BY expire_at`，让 `idx_status_expire` 变成 range 扫描 |
@@ -703,6 +702,8 @@ fmt.Sprintf("IT%d", time.Now().UnixNano()%100000)   // 只有 10 万种取值
 > - `docs/sql-optimization.md` —— 25 条业务查询的 EXPLAIN/EXPLAIN ANALYZE + 3 组索引反向验证。
 > - `golangci-lint` 配置 —— `.golangci.yml`（v2）+ `nub run backend:lint` + CI 关卡，实测 0 issues。
 > - **按角色横切复查** —— 三角色已全部查完；患者/管理员结论为无新缺口（医生角色此前修了 2 处）。
+> - **`docs/ai-vibe-coding/`（G6）** —— WORKFLOW + prompts 指针 + **6 篇**逐模块 review（M1–M6）。
+>   **性质是事后整理**，来源逐条标注；前端无页面故无前端 review。
 
 ### 3.3 低优先级 / 可选
 
@@ -720,13 +721,21 @@ fmt.Sprintf("IT%d", time.Now().UnixNano()%100000)   // 只有 10 万种取值
 
 ## 四、刻意偏离 spec 的地方
 
-**共 3 处，均有代码注释与 README 说明。请勿当作疏漏"修正"回去。**
+**共 6 处，均有代码注释与文档说明。请勿当作疏漏"修正"回去。**
+
+> **本表是唯一事实来源。** 其他文档（`AGENTS.md` §7、`CODE-REVIEW.md` §6.2、
+> `MODULES.md`）只做指向，不再复述条目 —— 曾经因为复述而漏掉了一处：
+> "用 `nub run` 替代 Makefile" 在 `package.json` 描述与 `AGENTS.md` §2.7 都写了，
+> 却没进这张表，于是各处一直写着"共 3 处"。**复述即漂移，只留一处。**
 
 | # | spec 原文 | 实际实现 | 理由 |
 |---|---|---|---|
 | 1 | `phone_hash = SHA256(phone + salt)` | **HMAC-SHA256(pepper, phone)** | keyed hash 不会因拼接方式引入长度扩展问题；输出同为 64 位十六进制，兼容 `CHAR(64)`。**关键性质仍是"必须确定性"**——用逐行随机盐会让登录彻底不可用 |
 | 2 | `internal/pkg/` 目录结构 | 工具包**平铺**在 `internal/` 下 | `internal` 本身已阻止外部导入，再加 `pkg` 是零语义的冗余层级（Go 社区共识） |
 | 3 | "repository 是唯一允许出现 GORM 的层" | `model` 的 PO 使用 `gorm.DeletedAt` | 换取 GORM **自动**为所有查询追加 `deleted_at IS NULL`。换成 `*time.Time` 就得每处手写，而我已经踩过一次漏写的坑（手写 JOIN 不带软删除条件，已删除医生出现在列表里） |
+| 4 | §11.2 要求 `Makefile`（`make dev` / `make test` / `make bench`） | **`nub run <script>`**（`package.json` 即任务清单） | 本项目包管理已经是 `nub`，再引入 make 等于为同一件事维护两套入口。**只保留一套**：脚本清单在 `package.json`，说明在 `AGENTS.md` §4 |
+| 5 | §10.1/§10.3 的 `prompts/system-rules.md`（一段贴进对话的提示词） | 全局规则写在仓库根的 **`AGENTS.md`** | 载体换了，内容更强：可 git 版本化、由 agent 自动加载不会漏、且能承载"每条规则是从哪个坑来的"。`docs/ai-vibe-coding/prompts/system-rules.md` 只留指针 |
+| 6 | §10.3 的 `docs/ai-vibe-coding/prompts/preconsult_v1.md` | 运行期提示词在 **`backend/prompts/`** | **`go:embed` 不允许跳出包目录**，提示词必须与代码同目录才能编进二进制；放 `docs/` 就得改成运行时读文件，那会引入"二进制与提示词版本错配"的失败形态。该目录只留指针，保证提示词只有一个副本 |
 
 ---
 

@@ -61,11 +61,11 @@
 | **G1** 三角色全流程闭环 | ⚠️ | 后端接口 100% 就绪；**前端页面未开发** → 患者无法真正走完 |
 | `golangci-lint` 零 error | ✅ | 仓库根 `.golangci.yml`（v2 格式）；本机实测 v2.13.2 **0 issues**；`nub run backend:lint` 一键；已进 CI |
 | **G5** `docker compose up -d --build` 一键起全栈 | ❌ | 只有 `deploy/compose.dev.yml`（依赖服务）；无前后端镜像、无根 compose |
-| **G6** `docs/ai-vibe-coding/` 留痕 | ❌ | 目录不存在（WORKFLOW + prompts + ≥5 reviews） |
+| **G6** `docs/ai-vibe-coding/` 留痕 | ✅ | **后端部分完成**：WORKFLOW + prompts 指针 + **6 篇**逐模块 review（M1–M6）。**事后整理**，来源逐条标注；前端无页面故无前端 review |
 | 3–5 分钟演示录屏 | ❌ | 前端页面未开发，无从录起 |
 
-> **一句话**：**后端可视为完成**；项目整体还差 **前端页面开发** 与 **三项交付物**
-> （全栈 compose、`docs/ai-vibe-coding/`、演示录屏）。
+> **一句话**：**后端可视为完成**；项目整体还差 **前端页面开发** 与 **两项交付物**
+> （全栈 compose、演示录屏）。
 > 完整待办见 `HANDOVER.md` §3，风险与未决项见 `FIXES.md` §7。
 
 ### 0.3 模块全景与依赖顺序

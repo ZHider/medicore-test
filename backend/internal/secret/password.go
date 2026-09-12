@@ -25,7 +25,16 @@ func HashPassword(password string, cost int) (string, error) {
 	if cost < MinBcryptCost {
 		cost = DefaultBcryptCost
 	}
-	// bcrypt 输入上限 72 字节，超出部分会被静默截断；这里显式报错避免"长密码无效"的安全错觉。
+	// bcrypt 的输入上限是 72 字节（Blowfish 密钥调度只用得到这么多）。
+	//
+	// 这里显式拒绝，理由**不是**"库会静默截断"—— 实测当前依赖
+	// （x/crypto v0.48.0）的 GenerateFromPassword 对 >72 字节会返回
+	// ErrPasswordTooLong，并不会截断。保留这道检查是为了：
+	//   1. 让"超长口令"报出与库版本无关的明确错误，
+	//      而不是依赖某个具体版本的库行为（早期实现确实是静默截断的）；
+	//   2. 与下面 VerifyPassword 的检查**成对**存在 ——
+	//      比对侧库**不做**长度检查（CompareHashAndPassword 直接算），
+	//      没有这道守卫就会白算一次 Blowfish 扩展。
 	if len(password) > 72 {
 		return "", fmt.Errorf("password exceeds bcrypt 72-byte limit")
 	}
@@ -37,6 +46,11 @@ func HashPassword(password string, cost int) (string, error) {
 }
 
 // VerifyPassword 校验口令。散列不匹配返回 false，不返回具体原因。
+//
+// 超长输入直接返回 false 而不是交给库：bcrypt 的比对路径不检查长度
+// （只有 GenerateFromPassword 检查），会照常跑完一整轮 Blowfish 扩展。
+// 而 HashPassword 拒绝生成 >72 字节的散列，所以这种输入**不可能**匹配成功 ——
+// 提前返回只是短路掉一次白算。
 func VerifyPassword(hashed, password string) bool {
 	if len(password) > 72 {
 		return false
