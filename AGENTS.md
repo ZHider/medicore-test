@@ -195,6 +195,8 @@ MediCore/
 │   ├── FIXES.md             # ★ 缺陷与改进总账 + 当前健康指标（**向上汇报看这份**）
 │   ├── PITFALLS.md          # ★ 易错点总索引 + 诊断判据（**写代码前扫一眼**）
 │   ├── sql-optimization.md  # ★ SQL/索引实测：EXPLAIN + IGNORE INDEX 反向验证
+│   ├── ONBOARDING.md        # ★★ **新人从零上手**：跑起来 → 业务 → 架构 → 取舍（接手先读这份）
+│   ├── FIRST-TASKS.md       # ★★ **新人动手**：5 个由易到难的真实任务，每个含验收标准
 │   ├── contract-sync.md     # ★ **待做方案存档**：前后端契约同步（生成 + 检测），尚未实施
 │   ├── ai-vibe-coding/      # ★ spec §10.3 交付物：WORKFLOW + 提示词指针 + 6 篇逐模块 review
 │   └── benchmark/           # ★ 性能基准报告（含复现命令与环境说明）
@@ -661,5 +663,14 @@ v1 用 `linters-settings` / `issues.exclude-rules`，v2 用 `version: "2"` +
 | 低 | `repository` 层覆盖率 | 按包统计 6.4%（假象）；集成口径 **67.5%**。仍为 0% 的主要是缓存命中路径与目录只读查询 |
 | 低 | fuzz 目标可再扩 | 目前覆盖 secret/jwt/audit/mask/model/service/**traceid** 的 13 个目标；`llm` 的流式分片解析、`config` 的取值解析尚未纳入 |
 
-**接手前建议先读**：`docs/HANDOVER.md`（开发历程与教训）→ `docs/ARCHITECTURE.md`（架构细节）
-→ `docs/CODE-REVIEW.md`（当前质量状态与已知短板）。
+**接手前建议先读**（按顺序）：
+
+| 你是谁 | 先读什么 |
+|---|---|
+| **第一次接触这个项目的人**（基础一般） | **`docs/ONBOARDING.md`** → 然后 **`docs/FIRST-TASKS.md`** 动手 |
+| 熟悉的工程师 / agent | `docs/HANDOVER.md`（开发历程与教训）→ `docs/ARCHITECTURE.md` → `docs/MODULES.md`（改代码前查）→ `docs/PITFALLS.md`（写代码前扫） |
+| 只想看质量状态 | `docs/FIXES.md` §1 / §2 |
+
+> **`docs/ONBOARDING.md` 的定位**：本文档（`AGENTS.md`）是**参考手册** ——
+> 按主题排列，适合"查"。而 `ONBOARDING.md` 是**学习路径** —— 按顺序排列，
+> 适合"从头读一遍"，每节末尾有自检题。**两者是互补的，不是重复的。**
