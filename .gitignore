@@ -18,6 +18,14 @@ backend/bin/
 *.local.yml
 config.local.*
 
+# 数据库导出。`nub run stack:dump` 默认写到 deploy/backup.sql。
+# 里面含口令散列与加密后的手机号/身份证，绝不入库。
+# 注意 docs/schema.sql 是 DDL 来源，必须被跟踪 —— 所以只忽略这些具体名字。
+deploy/backup.sql
+deploy/*.dump
+deploy/dump*.sql
+*.sqldump
+
 # 日志
 logs/
 *.log

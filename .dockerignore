@@ -1,0 +1,14 @@
+# 前端镜像的构建上下文是仓库根目录，这里用**白名单**把它压到最小。
+#
+# ⚠️ 顺序有意义：Docker 按顺序求值，后面的 `!` 可以把前面排除掉的内容重新包含进来。
+#    最后一条 `**` + 白名单否定是必需的 —— 否则 backend/ 的源码、
+#    frontend/node_modules（上百 MB）都会被塞进构建上下文。
+
+# 先排除一切
+**
+
+# 只放行镜像真正需要的几项
+!frontend/dist
+!frontend/Dockerfile
+!deploy/nginx/default.conf
+!deploy/nginx/security-headers.conf

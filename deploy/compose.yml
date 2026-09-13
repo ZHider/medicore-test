@@ -1,0 +1,214 @@
+# MediCore 全栈编排（spec §11.2）。
+#
+# 与 deploy/compose.dev.yml 的区别：
+#   - 那个只起**依赖**（mysql + redis）并映射端口，供本机 go run / 调试器直连；
+#   - 这个是**交付编排**：mysql / redis / backend 全部只在内部网络，
+#     宿主机只暴露 frontend 一个端口，浏览器面对的是同源地址。
+#
+# 用法：
+#   nub run stack:init     # 生成 deploy/.env（密钥、端口、GOMODCACHE）
+#   nub run stack:up       # 构建前端产物 + 起全栈
+#   nub run stack:seed     # 灌演示数据（幂等，可重复跑）
+#   nub run stack:down     # 停止
+#   nub run stack:reset    # 停止并删除数据卷（会清空数据库）
+#
+# 端口暴露策略（spec §11.2）：
+#   mysql/redis/backend 一律**不映射**宿主机端口，仅在 medicore 网络内可达。
+#   唯一的入口是 frontend（nginx），容器内监听 80，宿主机端口由
+#   STACK_HTTP_PORT 决定（默认 80；本机 80 被 caddy 占用时 init-env 会挑空闲端口）。
+
+name: medicore
+
+# ---------------------------------------------------------------------------
+# 公共片段
+# ---------------------------------------------------------------------------
+
+# 后端与 seed 共用的环境变量。
+# 全部通过环境变量注入是**刻意**的：仓库里不含任何密钥，
+# 运行镜像里也只有一份非敏感的 configs/config.yaml（见 backend/Dockerfile）。
+#
+# ⚠️ 插值变量一律用 STACK_ 前缀，**不要改回 MEDICORE_***。
+# 原因（实测踩到）：`nub` 会自动加载根目录的 .env（开发用，含
+# MEDICORE_MYSQL_PASSWORD=medicore123），而 Docker Compose 的变量优先级是
+# 「shell 环境 > .env 文件」。若这里写 ${MEDICORE_MYSQL_PASSWORD}，
+# 那么 `nub run stack:*` 会拿到**开发那套口令**去起编排，
+# 与数据卷里初始化的随机口令不匹配 → 后端 Access denied。
+# 左边（容器内的键名）必须是 MEDICORE_*，因为那是后端读的；
+# 右边（插值来源）必须是 STACK_*，因为它只能来自 deploy/.env。
+x-backend-env: &backend-env
+  MEDICORE_APP_ENV: prod
+  MEDICORE_APP_PORT: "8080"
+  MEDICORE_LOG_LEVEL: info
+
+  MEDICORE_MYSQL_HOST: mysql
+  MEDICORE_MYSQL_PORT: "3306"
+  MEDICORE_MYSQL_USER: medicore
+  MEDICORE_MYSQL_PASSWORD: ${STACK_MYSQL_PASSWORD:?缺少 STACK_MYSQL_PASSWORD，请先运行 nub run stack:init}
+  MEDICORE_MYSQL_DATABASE: medicore
+
+  MEDICORE_REDIS_ADDR: redis:6379
+
+  # 三个密钥缺一不可，config.Validate() 会在启动时拒绝空值
+  MEDICORE_SECURITY_AES_KEY: ${STACK_AES_KEY:?缺少 STACK_AES_KEY，请先运行 nub run stack:init}
+  MEDICORE_SECURITY_PHONE_PEPPER: ${STACK_PHONE_PEPPER:?缺少 STACK_PHONE_PEPPER，请先运行 nub run stack:init}
+  MEDICORE_SECURITY_JWT_SECRET: ${STACK_JWT_SECRET:?缺少 STACK_JWT_SECRET，请先运行 nub run stack:init}
+
+  TZ: ${STACK_TZ:-Asia/Shanghai}
+
+services:
+  # -------------------------------------------------------------------------
+  # 数据存储（仅内部网络）
+  # -------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    container_name: medicore-mysql
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${STACK_MYSQL_ROOT_PASSWORD:?缺少 STACK_MYSQL_ROOT_PASSWORD，请先运行 nub run stack:init}
+      MYSQL_DATABASE: medicore
+      MYSQL_USER: medicore
+      MYSQL_PASSWORD: ${STACK_MYSQL_PASSWORD:?}
+      TZ: ${STACK_TZ:-Asia/Shanghai}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # 仅在数据卷为空时执行一次，建表 + 建索引
+      - ../docs/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      # ⚠️ 刻意**不用** mysqladmin ping：
+      # docker-entrypoint 会先起一个临时 server 做初始化，那时 ping 已经能通，
+      # 但最终 server 还没起来。用 ping 判就绪会随机失败，表现为
+      # "driver: bad connection"（本项目踩过，见 AGENTS.md §5.1）。
+      # 这里用真实查询探测。
+      test:
+        [
+          "CMD-SHELL",
+          "mysql -uroot -p\"$$MYSQL_ROOT_PASSWORD\" -N -e 'SELECT 1' medicore >/dev/null 2>&1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    networks: [medicore]
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: medicore-redis
+    # appendonly 保证重启不丢号源缓存与 Stream 队列（spec §7.1 补偿机制的前提）
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    networks: [medicore]
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # 后端
+  # -------------------------------------------------------------------------
+  backend:
+    image: medicore/backend:local
+    container_name: medicore-backend
+    build:
+      context: ../backend
+      # 把宿主机已下载好的 Go 模块缓存作为**命名构建上下文**挂进来。
+      # Dockerfile 用 RUN --mount=from=gomodcache 以只读方式使用它，
+      # 配合 GOPROXY=off 实现零网络编译。
+      #
+      # 实测：首次构建需要把这份缓存传给 BuildKit（本机约 1.05 GB / 79s），
+      # 之后由 BuildKit 缓存复用，重建约 5s。
+      #
+      # 用 `:?` 而不是 `:-` 是刻意的：留空会让 Docker 报
+      # "path \"\" not found"，与真实原因（没探测到 GOMODCACHE）毫无关联。
+      additional_contexts:
+        gomodcache: ${GOMODCACHE:?未探测到 GOMODCACHE：请确认 go 在 PATH 上并重新运行 `nub run stack:init`，或手动在 deploy/.env 中填写 `go env GOMODCACHE`（用正斜杠）}
+    environment:
+      <<: *backend-env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # 用 readyz 而不是 healthz：它同时探测 MySQL 与 Redis，
+      # 依赖挂了容器会被标记为 unhealthy，问题在 `docker compose ps` 里一眼可见。
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    # 应用自身处理 SIGTERM 并有 10s 优雅关闭窗口（cmd/server/main.go）
+    stop_grace_period: 15s
+    networks: [medicore]
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # 前端（nginx：托管静态资源 + 反代 /api）
+  # -------------------------------------------------------------------------
+  frontend:
+    image: medicore/frontend:local
+    container_name: medicore-frontend
+    build:
+      # 上下文是**仓库根目录**：镜像需要同时取到 frontend/dist 与
+      # deploy/nginx/default.conf。根 .dockerignore 用白名单把上下文压到几 MB。
+      context: ..
+      dockerfile: frontend/Dockerfile
+    ports:
+      # 容器内固定 80（spec §11.2），宿主机端口可配
+      - "${STACK_HTTP_PORT:-80}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks: [medicore]
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # 演示数据（一次性任务，不属于常驻服务）
+  #
+  # 放在 tools profile 下：`docker compose up` 不会启动它，
+  # 需要显式执行 `nub run stack:seed`。
+  # 它复用 backend 已构建好的镜像，因此必须先跑过一次 stack:up。
+  # -------------------------------------------------------------------------
+  seed:
+    image: medicore/backend:local
+    container_name: medicore-seed
+    profiles: ["tools"]
+    # ⚠️ 必须覆盖 entrypoint：镜像的 ENTRYPOINT 是 /app/server，
+    # 只写 command 会变成 `/app/server /app/seed`。
+    entrypoint: ["/app/seed"]
+    environment:
+      <<: *backend-env
+      # cmd/seed 建管理员账号时读它；不设置则回退默认口令并打印警告
+      MEDICORE_ADMIN_PASSWORD: ${STACK_ADMIN_PASSWORD:-}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # 一次性任务，跑完就退出，绝不能重启
+    restart: "no"
+    networks: [medicore]
+
+# ---------------------------------------------------------------------------
+# 网络与卷
+# ---------------------------------------------------------------------------
+
+networks:
+  medicore:
+    driver: bridge
+
+volumes:
+  mysql-data:
+  redis-data:

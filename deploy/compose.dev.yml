@@ -27,9 +27,22 @@ services:
       - ../docs/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
       - ./mysql/init-test-db.sql:/docker-entrypoint-initdb.d/02-test-db.sql:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-prootpass"]
+      # ⚠️ 刻意**不用** `mysqladmin ping`（AGENTS.md §5.1）：
+      # docker-entrypoint 会先起一个临时 server 做初始化，那时 ping 可能已经通，
+      # 但最终 server 还没起来。用 ping 判就绪会随机失败，表现为
+      # "driver: bad connection"。
+      # 这里用真实查询，且指定了 medicore 库 —— 只有初始化真正跑完
+      # （MYSQL_DATABASE 已建、initdb.d 已执行）这条才会成功。
+      #
+      # 这一点现在是**硬要求**：`nub run dev` 用 `compose up --wait` 等它，
+      # 健康检查不可靠会直接让后端在冷启动时连不上数据库。
+      test:
+        [
+          "CMD-SHELL",
+          "mysql -uroot -prootpass -N -e 'SELECT 1' medicore >/dev/null 2>&1",
+        ]
       interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 30
       start_period: 20s
 

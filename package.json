@@ -4,9 +4,11 @@
   "version": "0.1.0",
   "description": "MediCore 医疗数据中台与 AI 预问诊平台 —— 统一任务入口（替代 Makefile）",
   "scripts": {
-    "deps:up": "docker compose -f deploy/compose.dev.yml up -d",
+    "deps:up": "docker compose -f deploy/compose.dev.yml up -d --wait --wait-timeout 120",
     "deps:down": "docker compose -f deploy/compose.dev.yml down",
     "deps:reset": "docker compose -f deploy/compose.dev.yml down -v",
+
+    "dev": "nub run deps:up && concurrently -k -n backend,frontend -c cyan,magenta \"nub run backend:dev\" \"nub run frontend:dev\"",
 
     "backend:dev": "cd backend && go run ./cmd/server",
     "backend:build": "cd backend && go build ./...",
@@ -21,20 +23,28 @@
     "backend:seed": "cd backend && go run ./cmd/seed",
     "backend:genlocal": "cd backend && go run ./cmd/genlocal",
     "backend:loadtest": "cd backend && go run ./cmd/loadtest",
-
     "backend:fuzz": "bash backend/scripts/fuzz.sh 30s",
     "backend:fuzz:long": "bash backend/scripts/fuzz.sh 5m",
     "backend:bench": "cd backend && go test -run '^$' -bench . -benchmem ./internal/...",
     "backend:bench:integration": "cd backend && go test -tags=integration -run '^$' -bench . -benchmem ./test/integration/...",
     "backend:race": "bash backend/scripts/race.sh",
-
     "frontend:dev": "nub --cwd frontend run dev",
     "frontend:build": "nub --cwd frontend run build",
     "frontend:typecheck": "nub --cwd frontend run typecheck",
     "frontend:lint": "nub --cwd frontend run lint",
-
-    "lint": "nub run backend:vet && nub run frontend:lint",
-    "test": "nub run backend:test"
+    "frontend:test": "nub --cwd frontend run test",
+    "stack:init": "node deploy/init-env.mjs",
+    "stack:up": "nub --cwd frontend run build && docker compose -f deploy/compose.yml up -d --build --wait --wait-timeout 180",
+    "stack:seed": "docker compose -f deploy/compose.yml --profile tools run --rm seed",
+    "stack:down": "docker compose -f deploy/compose.yml down",
+    "stack:reset": "docker compose -f deploy/compose.yml down -v",
+    "stack:logs": "docker compose -f deploy/compose.yml logs -f --tail=100",
+    "stack:ps": "docker compose -f deploy/compose.yml ps",
+    "stack:db": "node deploy/db.mjs mysql",
+    "stack:redis": "node deploy/db.mjs redis",
+    "stack:dump": "node deploy/db.mjs dump",
+    "lint": "nub run backend:vet && nub run frontend:lint && nub run frontend:typecheck",
+    "test": "nub run backend:test && nub run frontend:test"
   },
   "devEngines": {
     "packageManager": {
@@ -42,5 +52,8 @@
       "version": "^0.9.0",
       "onFail": "ignore"
     }
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.5"
   }
 }

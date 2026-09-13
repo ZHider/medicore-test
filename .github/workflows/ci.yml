@@ -201,7 +201,7 @@ jobs:
           govulncheck ./...
 
   # ---------------------------------------------------------------------------
-  # 前端（脚手架阶段：只做类型检查、lint 与构建）
+  # 前端：类型检查、lint、单元测试、构建
   # ---------------------------------------------------------------------------
   frontend:
     name: 前端
@@ -231,6 +231,12 @@ jobs:
 
       - name: Lint
         run: nub run frontend:lint
+
+      # vitest：纯逻辑测试，不需要浏览器/DOM。
+      # 注意 environment 在 vite.config.ts 里固定为 node —— runner 上没有浏览器，
+      # 若将来加了组件测试，记得同时引入 jsdom 并把 environment 改掉。
+      - name: 单元测试
+        run: nub run frontend:test
 
       - name: 构建
         run: nub run frontend:build

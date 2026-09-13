@@ -1,5 +1,12 @@
 # 构建上下文保持最小（KISS）：只排除绝不参与编译的产物。
 # 注意：Dockerfile 用的是白名单式 COPY，因此这里主要防止本地产物混入。
+
+# ⚠️ 这一条是**安全项**，不是省空间：
+# config.local.yaml 里是开发者本机的 aes_key / phone_pepper / jwt_secret，
+# 一旦被 COPY . . 带进镜像层，密钥就永久留在镜像历史里了。
+configs/config.local.yaml
+configs/*.local.yaml
+
 .git
 .gitignore
 *.exe
