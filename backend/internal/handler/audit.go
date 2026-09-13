@@ -25,8 +25,11 @@ func (h *AuditHandler) List(c *gin.Context) {
 	query := service.AuditQuery{
 		Resource: c.Query("resource"),
 		Action:   c.Query("action"),
-		From:     c.Query("from"),
-		To:       c.Query("to"),
+		// trace_id 交给 service 校验：格式错要报 40001，不能静默当成"不限"
+		// （静默忽略会返回全部日志，管理员会误以为该追踪号关联了很多记录）。
+		TraceID: c.Query("trace_id"),
+		From:    c.Query("from"),
+		To:      c.Query("to"),
 	}
 
 	// user_id 非法时不报错，而是忽略该条件——

@@ -2,12 +2,14 @@ package service
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/medicore/backend/internal/apperr"
 	"github.com/medicore/backend/internal/errcode"
 	"github.com/medicore/backend/internal/model"
 	"github.com/medicore/backend/internal/repository"
+	"github.com/medicore/backend/internal/traceid"
 )
 
 // AuditDeps 是 AuditService 的依赖集合。
@@ -30,6 +32,7 @@ type AuditQuery struct {
 	UserID   *uint64
 	Resource string
 	Action   string
+	TraceID  string
 	From     string
 	To       string
 }
@@ -44,6 +47,23 @@ func (s *AuditService) List(
 		UserID:   query.UserID,
 		Resource: query.Resource,
 		Action:   query.Action,
+	}
+
+	// 追踪号必须先归一化再校验。
+	//
+	// 归一化：去掉粘贴时常见的空白，并转小写 —— 列排序规则是 ascii_bin（逐字节比较），
+	// 大写形式的追踪号直接查是查不到的，而用户从界面复制时可能被各种工具改成大写。
+	//
+	// 校验：格式不对**返回 40001 而不是静默忽略**。这一点与 user_id 的取舍相反，
+	// 原因是误导性：忽略之后返回的是"全部日志"，管理员会以为这个追踪号关联了成百上千条记录。
+	// 与 from/to 的处理保持一致（格式错就报错，message 说明期望格式）。
+	if raw := strings.TrimSpace(query.TraceID); raw != "" {
+		normalized := strings.ToLower(raw)
+		if !traceid.IsValid(normalized) {
+			return empty, apperr.New(errcode.ErrInvalidParam,
+				"追踪号应为 32 位十六进制字符")
+		}
+		filter.TraceID = normalized
 	}
 
 	var err error

@@ -131,6 +131,87 @@ func TestAuditList_PassesFiltersThrough(t *testing.T) {
 	assert.Equal(t, time.Date(2026, 9, 12, 23, 59, 59, 0, time.Local), store.lastFilter.To)
 }
 
+// 追踪号查询是"用户截图报错 → 定位到具体请求"的入口，必须真的传到仓储层。
+func TestAuditList_PassesTraceIDThrough(t *testing.T) {
+	const traceID = "ee33b8045a4cfb7a6f0ba98062ab25c6"
+
+	svc, store := newAuditFixture()
+
+	_, err := svc.List(context.Background(), AuditQuery{TraceID: traceID}, "", 20)
+	require.NoError(t, err)
+
+	assert.Equal(t, traceID, store.lastFilter.TraceID)
+}
+
+// 从界面上复制追踪号时常带上空白或被工具改成大写，
+// 而列排序规则是 ascii_bin（逐字节比较）—— 不归一就查不到，用户会以为"记录不存在"。
+func TestAuditList_NormalizesTraceID(t *testing.T) {
+	const canonical = "ee33b8045a4cfb7a6f0ba98062ab25c6"
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"原样小写", canonical, canonical},
+		{"转成大写", "EE33B8045A4CFB7A6F0BA98062AB25C6", canonical},
+		{"首尾有空白", "  " + canonical + "\n", canonical},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, store := newAuditFixture()
+
+			_, err := svc.List(context.Background(), AuditQuery{TraceID: tt.in}, "", 20)
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.want, store.lastFilter.TraceID)
+		})
+	}
+}
+
+// 格式不对必须报 40001，**不能**静默忽略。
+//
+// 这一点与 user_id 的取舍刻意相反：忽略之后返回的是"全部日志"，
+// 管理员会以为这个追踪号关联了成百上千条记录 —— 一个静默的、有误导性的结果。
+// 与 from/to 的处理保持一致。
+func TestAuditList_RejectsMalformedTraceID(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+	}{
+		{"31 位少一个字符", "0123456789abcdef0123456789abcde"},
+		{"33 位多一个字符", "0123456789abcdef0123456789abcdef0"},
+		{"UUID 形式", "550e8400-e29b-41d4-a716-446655440000"},
+		{"含非十六进制字符", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"},
+		{"非 ASCII", "中文中文中文中文中文中文中文中文中文中文中文中文中文中文中文中"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, store := newAuditFixture()
+
+			_, err := svc.List(context.Background(), AuditQuery{TraceID: tt.in}, "", 20)
+
+			require.Error(t, err, "格式错误的追踪号必须报错，不能当成'不限'")
+			assert.Equal(t, errcode.ErrInvalidParam, apperr.Code(err))
+			assert.Zero(t, store.calls, "参数非法时不应发起查询")
+		})
+	}
+}
+
+// 空串与纯空白等同于"不限"，此时不得给仓储层加条件。
+func TestAuditList_EmptyTraceIDMeansNoFilter(t *testing.T) {
+	for _, in := range []string{"", "   "} {
+		svc, store := newAuditFixture()
+
+		_, err := svc.List(context.Background(), AuditQuery{TraceID: in}, "", 20)
+		require.NoError(t, err)
+
+		assert.Empty(t, store.lastFilter.TraceID, "输入 %q 应表示不限", in)
+	}
+}
+
 // 非法游标要被拒绝，而不是被当成"第一页"。
 func TestAuditList_RejectsBadCursor(t *testing.T) {
 	svc, store := newAuditFixture()

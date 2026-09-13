@@ -27,6 +27,7 @@ import (
 
 	"github.com/medicore/backend/internal/metrics"
 	"github.com/medicore/backend/internal/model"
+	"github.com/medicore/backend/internal/traceid"
 )
 
 // 写入器参数。
@@ -142,7 +143,11 @@ func (w *Writer) Record(e Entry) {
 	}
 
 	entry := model.AuditLog{
-		TraceID:    e.TraceID,
+		// 第二道防线。信任边界已经在 middleware.TraceID 上把外部来源的值洗净，
+		// 这里再走一次是为了兜住"以后有人绕过中间件直接调 Record"的情况：
+		// 目标列是 CHAR(32) ascii，一个超长值会让**整批 100 条**一起插入失败。
+		// 与下面 UserAgent 的 truncate 同一个失败模式，见本文件 truncate 的注释。
+		TraceID:    traceid.Sanitize(e.TraceID),
 		UserID:     e.UserID,
 		Role:       optionalString(e.Role),
 		Method:     e.Method,

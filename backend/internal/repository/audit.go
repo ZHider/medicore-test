@@ -39,6 +39,9 @@ type AuditFilter struct {
 	UserID   *uint64
 	Resource string
 	Action   string
+	// TraceID 精确匹配一条链路追踪号（32 位十六进制，小写规范形式）。
+	// 走 idx_trace，是"用户截图报错 → 定位到具体请求"的入口。
+	TraceID string
 	// From / To 为时间范围，零值表示不限。
 	From time.Time
 	To   time.Time
@@ -70,6 +73,9 @@ func (r *AuditRepo) ListByCursor(
 	}
 	if filter.Action != "" {
 		q = q.Where("a.action = ?", filter.Action)
+	}
+	if filter.TraceID != "" {
+		q = q.Where("a.trace_id = ?", filter.TraceID)
 	}
 	if !filter.From.IsZero() {
 		q = q.Where("a.created_at >= ?", filter.From)

@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/medicore/backend/internal/model"
+	"github.com/medicore/backend/internal/traceid"
 )
 
 // --- Describe ---
@@ -120,6 +121,17 @@ func (f *fakeStore) setErr(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.err = err
+}
+
+// all 返回按落库顺序拍平的所有记录。
+func (f *fakeStore) all() []model.AuditLog {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []model.AuditLog
+	for _, b := range f.batches {
+		out = append(out, b...)
+	}
+	return out
 }
 
 func newTestWriter(store Store) *Writer {
@@ -319,4 +331,40 @@ func (f *fakeStore) attemptCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.attempts
+}
+
+// Writer 的 trace_id 兜底。
+//
+// 信任边界在 middleware.TraceID 上（外部头必须先过 traceid.Sanitize），
+// 但审计层不能假设每个调用方都走了那个中间件：目标列是 CHAR(32) ascii，
+// 一条超长 trace_id 会让**整批 100 条**记录一起插入失败（实测 ERROR 1406），
+// 也就是"一个请求带走一批审计"。这里守住的是这条底线。
+func TestWriter_BoundsTraceID(t *testing.T) {
+	const good = "ee33b8045a4cfb7a6f0ba98062ab25c6"
+
+	store := &fakeStore{}
+	w := newTestWriter(store)
+	w.Start()
+
+	oversized := sampleEntry()
+	oversized.TraceID = strings.Repeat("a", 4000)
+	w.Record(oversized)
+
+	valid := sampleEntry()
+	valid.TraceID = good
+	w.Record(valid)
+
+	w.Stop()
+
+	entries := store.all()
+	require.Len(t, entries, 2, "兜底不应丢弃记录本身，只应替换那个字段")
+
+	for i, e := range entries {
+		assert.True(t, traceid.IsValid(e.TraceID),
+			"第 %d 条落库的 trace_id 不合法：%q", i, e.TraceID)
+		assert.NotEqual(t, oversized.TraceID, e.TraceID, "超长值绝不能原样落库")
+	}
+
+	// 合法的值必须原样保留 —— 换了就打断与响应头/日志之间的链路关联
+	assert.Equal(t, good, entries[1].TraceID)
 }

@@ -608,9 +608,9 @@ nub run backend:vuln     # govulncheck ./...（需先装）
 分两层：单元测试验证业务分支，集成测试验证"跑起来才能确认"的东西。
 
 ```bash
-nub run backend:test              # 单元测试，251 个用例，不依赖外部服务
+nub run backend:test              # 单元测试，268 个用例，不依赖外部服务
 
-# 集成测试，60 个用例：需先启动依赖并设置数据库口令（与 deploy/compose.dev.yml 一致）
+# 集成测试，67 个用例：需先启动依赖并设置数据库口令（与 deploy/compose.dev.yml 一致）
 nub run deps:up
 MEDICORE_MYSQL_PASSWORD=medicore123 nub run backend:test:integration
 
@@ -764,7 +764,7 @@ HTTP 响应（404/405/400/401/403 信封、SSE 事件流）只能由 handler 产
 > 执行不计入该包的 profile。用 `-coverpkg` 单独统计集成测试，
 > **`repository` 实际 67.5%**、`service` 62.4%、`handler` 76.6%。
 
-### 单元测试（251 个用例）
+### 单元测试（268 个用例）
 
 service 层不依赖任何外部服务（注入内存实现）：
 
@@ -812,7 +812,9 @@ TraceID → Recovery → RequestLog → Metrics → [RateLimit → JWT → RBAC]
 
 - **统一响应信封**：`{code, message, data, trace_id}`，成功 `code=0`。
   未匹配路由返回 40003，方法不支持返回 40006，二者同样是 JSON 信封（非 gin 默认纯文本）。
-- **TraceID**：入口生成 32 位十六进制；上游带 `X-Trace-Id` 则沿用；同时写响应头与响应体。
+- **TraceID**：入口生成 32 位十六进制；上游带 `X-Trace-Id` 时**先校验再沿用**（只接受 32 位十六进制，归一为小写），不合规则丢弃重生成；同时写响应头与响应体。
+  > 校验是必需的，不是洁癖：这个头由客户端控制，而中间件排在认证之前。它会被原样写进 `audit_logs.trace_id CHAR(32)`，超长值在 MySQL 严格模式下让**整批 100 条**审计记录一起插入失败 —— 一个构造出来的请求即可抹掉一批审计。
+- **审计查询**：`GET /admin/audit-logs` 支持 `trace_id` 精确过滤（走 `idx_trace`）。格式非法返回 `40001`，不静默忽略。
 - **日志**：Zap JSON，字段 `trace_id/method/path/status/latency_ms/client_ip`；5xx 走 Error 级别便于告警。
 - **指标**：`http_requests_total{method,path,status}`、`http_request_duration_seconds{method,path}`。
   `path` 用路由模板而非真实路径，避免高基数。
