@@ -13,38 +13,60 @@
 | 项 | 状态 |
 |---|---|
 | 后端 | ✅ 29 个端点全部可用，接口契约已冻结（本文档 §2/§3 是权威来源） |
-| 前端 | ⚠️ **只有 create-vue 脚手架**：`App.vue` 里是 `HelloWorld.vue`，没有路由、没有 Pinia、没有 axios 封装、没有页面 |
-| 依赖 | 已装好：`vue` 3.5 / `vue-router` 5.3 / `pinia` 4.0 / `axios` 1.20 / `element-plus` 2.14 / `echarts` 6.1 |
-| 构建 | `vite` 8.3 / `typescript` **5.9.3（锁死）** / `vue-tsc` 3.3 / `eslint` 10 |
+| 前端 | ✅ **已完成并实测**：三角色全部页面 + axios 封装 + 按角色动态路由 + ECharts 看板 |
+| 依赖 | 运行时：`vue` 3.5 / `vue-router` 5.3 / `pinia` 4.0 / `axios` 1.20 / `element-plus` 2.14 / `echarts` 6.1（**运行时依赖未新增**）。开发期新增 `vitest` 5.0 + `jsdom` 30 + `@vue/test-utils` 2.5 + `axios-mock-adapter` 2.1（测试）与 `mockjs` 1.1（**已装但刻意未用**，理由见 §5.8）以及 `concurrently`（在仓库根，用于 `nub run dev`） |
+| 构建 | `vite` 8.3 / `typescript` **5.9.3（锁死）** / `vue-tsc` 3.3 / `eslint` 10 / `vitest` 5.0 |
+| 测试 | ✅ **202 个用例 / 12 个文件**（`nub run frontend:test`，约 2.9s）。含组件测试、composable 状态机与 **API 契约测试**；关键用例都做过反向验证 |
 | 包管理 | **`nub`**（不是 npm / pnpm / yarn） |
-| 未完成 | 全部页面、axios 封装、路由与角色分流、ECharts 看板 |
+| 未完成 | ~~全栈 compose 编排~~ ✅ 已完成（`deploy/compose.yml`，见 `deploy/README.md`）；剩余是**浏览器人工验收** |
+
+### 0.1 本次交付与实测结论
+
+`typecheck` / `lint` / `build` 三者均**零错误零告警**，并对着**真实后端**跑通了三条主流程。
+
+| 项 | 结论 |
+|---|---|
+| 响应式 | 移动优先 CSS（断点 768 / 1024），<768 用抽屉导航，宽屏用固定侧栏；看板图表走 ResizeObserver |
+| 代理 | `/api` `/metrics` `/healthz` `/readyz` 四条代理规则均实测 200 |
+| 空列表 | 后端确实把空切片序列化成 `[]`，前端无需判 `null` |
+| 分页 | 最后一页 `has_more=false` 且 **`next_cursor` 字段消失**（`omitempty`），实测确认 |
+| SSE | 响应头 `text/event-stream`，事件为 `delta`（12 个）+ `done`（1 个），实测解析正常 |
+| 异步接口 | `POST .../preconsult/submit` 返回 **HTTP 202 且 `code=0`**，`already_submitted=false` |
+| 报告 | `done && fallback=false`，8 个结构化字段全在（`allergies,chief_complaint,medications,past_history,possible_departments,present_illness,red_flags,urgency`） |
+| 限流 | 429 + `code=42901` + **`retry-after: 12`** 响应头确实存在（用 `curl -i` 抓原始头确认） |
+| 归属校验 | 医生 2 访问医生 1 的报告 / 队列 / 写病历，三者均**实测 `40302`** |
+
+> **实测中值得记下的一件事**：`GET /appointments/:id/record` 对**不存在**的记录返回 `40003`（而非 `40302`），
+> 即"先查存在性、再判归属"。前端把 `40003` 当作"该病历不存在"处理是正确的，不要误以为是权限问题。
 
 ---
 
 ## 1. 立刻能跑起来
 
-### 1.1 ⛔ 第一件事：配 Vite 代理（**不配就一定失败**）
+### 1.1 ✅ Vite 代理（**已配置**，但必须理解它为什么存在）
 
 **后端没有任何 CORS 中间件**（`go.mod` 里也没有 cors 依赖，已核实）。
 浏览器的同源策略会让前端直连 `http://127.0.0.1:8080` 的请求**全部被拦**，
 而且后端**无法通过配置解决**。
 
-**正确做法：用 Vite 的开发代理，让浏览器看到的是同源请求。**
+**做法：用 Vite 的开发代理，让浏览器看到的是同源请求。**
+`frontend/vite.config.ts` 已配好（含 `@` → `src` 别名）：
 
 ```ts
-// frontend/vite.config.ts —— 当前这个文件里没有任何 proxy 配置，必须加
-import vue from '@vitejs/plugin-vue'
-import { defineConfig } from 'vite'
+// frontend/vite.config.ts（当前实际内容，已实测四条代理规则均 200）
+const backend = 'http://127.0.0.1:8080'
 
 export default defineConfig({
   plugins: [vue()],
+  resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
   server: {
+    port: 5173,
     proxy: {
-      '/api': { target: 'http://127.0.0.1:8080', changeOrigin: true },
+      '/api': { target: backend, changeOrigin: true },
       // /metrics 与探针不在 /api 下，管理看板要用
-      '/metrics': { target: 'http://127.0.0.1:8080', changeOrigin: true },
-      '/healthz': { target: 'http://127.0.0.1:8080', changeOrigin: true },
-      '/readyz': { target: 'http://127.0.0.1:8080', changeOrigin: true },
+      '/metrics': { target: backend, changeOrigin: true },
+      '/healthz': { target: backend, changeOrigin: true },
+      '/readyz': { target: backend, changeOrigin: true },
     },
   },
 })
@@ -59,6 +81,12 @@ const api = axios.create({ baseURL: '/api/v1' })
 生产环境同理 —— spec §11.2 的部署方案是 nginx 同时托管静态资源与反代 `/api`，
 **从头到尾都是同源**，所以"相对路径"这个写法在开发与生产都成立。
 （若将来确实要前后端分域部署，需要**后端**加 CORS 中间件，那是后端改动，别在前端绕。）
+
+> **若你改动了 `vite.config.ts`，必须重启 `frontend:dev`** —— Vite 只对源码热更新，
+> 配置变更不会热重载。
+>
+> **另一个实测细节**：Vite 8 默认只监听 `localhost`，用 `127.0.0.1:5173` 访问会**连接被拒**。
+> 本机验证时请用 `http://localhost:5173/`，或给 dev server 加 `host: true`。
 
 ### 1.2 起服务
 
@@ -129,8 +157,13 @@ nub run backend:seed        # 得到上表那份干净数据
 | `nub run frontend:build` | **`vue-tsc -b && vite build`**（类型错误会**中断构建**） |
 | `nub run frontend:typecheck` | 只做类型检查 |
 | `nub run frontend:lint` | ESLint（flat config） |
+| **`nub run frontend:test`** | **vitest**（202 个用例 / 12 个文件，约 2.9s）。默认 node 环境；组件/SSE 测试在文件首行用 `// @vitest-environment jsdom` 单独切换 |
+| **`nub --cwd frontend run test:watch`** | 监听模式（改代码自动重跑） |
 | `nub --cwd frontend add <pkg>` | 加依赖（**不用 npm install**） |
 | `nub run backend:seed` | 灌演示数据（幂等） |
+
+> 根目录的 **`nub run test`** 会依次跑后端（268 用例）与前端（202 用例）；
+> `nub run lint` 会跑 `backend:vet` + `frontend:lint` + `frontend:typecheck`。
 
 ---
 
@@ -156,8 +189,16 @@ nub run backend:seed        # 得到上表那份干净数据
    但 `code` 仍是 0）；失败时 HTTP 状态由错误码映射（见 §2.2）。
    **判定成功请用 `code === 0`，不要用 `status === 200`。**
 3. **`trace_id` 一定要用起来**。它是排障的唯一抓手：把它显示在错误提示里
-   （例如"操作失败（追踪号 3f2a…）"），用户截图即可定位到 `audit_logs` 与后端日志。
-   响应头里也有 `X-Trace-Id`，值相同。
+   （例如"操作失败（追踪号 3f2a…）"），用户截图即可定位到**那一条**请求。
+   响应头里也有 `X-Trace-Id`，值相同。**具体怎么查见 §5.7.1。**
+
+> **一个已经发生过的事故，值得记住**：这一节原本写着"用户截图即可定位到 `audit_logs`"，
+> 但当时**根本没有任何按追踪号查询的入口** —— `/admin/audit-logs` 只认
+> `resource`/`action`/`from`/`to`/`user_id`，`audit_logs` 上那个 `idx_trace` 索引
+> 在 Go 代码里从未被引用过。文档承诺了一个不存在的功能。
+>
+> 教训不是"写文档要小心"，而是：**凡是在文档里写出一个操作步骤，
+> 就应该在同一次改动里把它跑一遍**。这条承诺在对齐时才发现是空的。
 
 **axios 拦截器的正确写法**（HTTP 4xx/5xx 时 axios 会 throw，信封在 `error.response.data`）：
 
@@ -619,9 +660,21 @@ data: {"code":50201,"message":"AI 服务暂时不可用"}
 
 | # | Method | Path | 说明 |
 |---|---|---|---|
-| 27 | GET | `/admin/audit-logs` | 查询参数：`resource` `action` `from` `to` `user_id` `cursor` `size` |
+| 27 | GET | `/admin/audit-logs` | 查询参数：`resource` `action` **`trace_id`** `from` `to` `user_id` `cursor` `size` |
 | 28 | POST | `/admin/sync/:source` | `:source` 目前**只接受 `mockhis`**，其它值返回 404 |
 | 29 | GET | `/admin/sync-logs` | 查询参数：`source` `cursor` `size` |
+
+**`trace_id` 必须传 32 位十六进制**（大小写均可，后端归一为小写）。
+格式不对返回 `40001` —— 这一点与 `user_id` **刻意相反**：
+
+| 参数 | 格式错时 | 为什么 |
+|---|---|---|
+| `user_id` | **静默忽略** | 忽略后返回的是不加该条件的列表，语义上还能接受 |
+| `trace_id` | **40001** | 忽略后返回的是**全部日志**，管理员会以为"这个追踪号关联了成百上千条记录" —— 一个静默且高度误导的结果 |
+
+所以前端对 `trace_id` **不要**自己写一套格式校验去拦请求（那会与后端规则漂移），
+只做去空白、转小写这类宽松归一即可。列排序规则是 `ascii_bin`（逐字节比较），
+不归一大写的追踪号查不到。
 
 **审计查询的 `from` / `to`** 接受两种格式：`YYYY-MM-DD` 或 `YYYY-MM-DD HH:MM:SS`。
 格式不对返回 `40001` 且 `message` 说明期望格式。
@@ -795,25 +848,49 @@ export type TimeSlot = 'am' | 'pm'
 export type Urgency = 'routine' | 'urgent' | 'emergency'
 ```
 
-### 5.5 目录结构建议
-
-现状是脚手架（`App.vue` 直接用 `HelloWorld.vue`）。建议：
+### 5.5 实际目录结构（脚手架残留已清空）
 
 ```
 frontend/src/
-├── api/            # 每个后端模块一个文件：auth.ts appointment.ts catalog.ts …
-│   └── client.ts   # axios 实例 + 拦截器（含刷新去重）
-├── stores/         # Pinia：auth.ts appointment.ts
-├── router/         # index.ts + 按角色的路由守卫
-├── types/api.ts    # 后端 DTO 的 TS 镜像
-├── composables/    # useSSE.ts useCursorList.ts useCountdown.ts
-├── views/          # 页面
-├── components/     # 可复用组件
-└── utils/          # 日期、Prometheus 解析、脱敏展示等
+├── api/                   # client.ts 是唯一的 axios 实例
+│   ├── client.ts          # 信封剥离 + 刷新去重 + 40102 重放 + Retry-After
+│   ├── error.ts           # ApiError 与 ErrorCode 常量
+│   ├── tokens.ts          # 双令牌读写（localStorage 不可用时退化为内存）
+│   ├── auth.ts  catalog.ts  appointment.ts
+│   ├── preconsult.ts  record.ts  admin.ts
+│   └── system.ts          # /healthz /readyz /metrics（刻意绕开拦截器，见下方注释）
+├── stores/                # auth.ts（登录态）/ booking.ts（挂号草稿）
+├── router/index.ts        # 静态路由 + 按角色 addRoute + 守卫
+├── types/
+│   ├── api.ts             # 后端 DTO 的 TS 镜像（一 DTO 一 interface）
+│   └── ui.ts              # 前端内部类型
+├── composables/
+│   ├── client 无关的：useCursorList.ts（游标分页 + IntersectionObserver）
+│   ├── useCountdown.ts    # 15 分钟确认窗口 / Retry-After 倒计时
+│   ├── useMediaQuery.ts   # 需要 JS 决策的响应式分支
+│   └── usePreconsultChat.ts  # SSE 打字机 + abort + 历史恢复
+├── layouts/AppLayout.vue  # 响应式外壳：≥1024 固定侧栏，<1024 抽屉
+├── views/                 # LoginView / RegisterView / NotFoundView
+│   ├── patient/           # BookingView / MyAppointmentsView / PreconsultChatView
+│   ├── doctor/            # WorkbenchView / WriteRecordView
+│   ├── admin/             # DashboardView / AuditLogsView / SyncView
+│   ├── ReportView.vue     # 三角色共用
+│   └── RecordsView.vue    # 三角色共用
+├── components/            # AppIcon(内联 SVG) / AppNav / PageHeader / StatusTag
+│                          # EmptyState / ReportPanel / EChart
+└── utils/                 # datetime.ts prometheus.ts sse.ts id.ts
 ```
 
-删掉脚手架残留：`components/HelloWorld.vue`、`assets/vue.svg` / `vite.svg` / `hero.png`、
-`public/` 下的示例图（`favicon.svg` / `icons.svg` 可留）。
+**两处刻意的设计决定，改动前请先理解：**
+
+1. **`api/system.ts` 不走 `client.ts` 的拦截器。** `/readyz` 依赖下线时返回 503，
+   但 `data` 里仍带着逐项明细（运维真正要看的东西）；走统一拦截器会把这次响应
+   压成"只有错误码、没有明细"的 ApiError。`/metrics` 则是纯文本而非 JSON 信封。
+2. **`AppIcon` 是内联 SVG 路径表**，不是图标库。引入 `@element-plus/icons-vue`
+   会新增依赖（见 §5.2），而这里只需要十几个 24×24 描边路径。
+
+删掉的脚手架残留：`components/HelloWorld.vue`、`assets/{vue.svg,vite.svg,hero.png}`、
+`public/icons.svg`（`public/favicon.svg` 保留，`index.html` 引用了它）。
 
 ### 5.6 路由与角色
 
@@ -828,6 +905,54 @@ frontend/src/
 **路由守卫要用 `GET /auth/me` 校验，不能只信 localStorage 里的 role** ——
 localStorage 可以被改，而且 token 可能已过期或被撤销。
 
+#### 5.6.1 动态注册的两个必踩之坑（**都真实发生过**）
+
+**坑一：守卫的判断顺序 —— 刷新页面必 404。**
+
+角色路由是登录后才注册的，所以**刷新时任何深链接都会被 `/:pathMatch(.*)*`（catchAll）抢走匹配**。
+而 catchAll 带着 `public: true`。若把 `if (to.meta.public) return true` 写在注册之前：
+
+1. 匹配到 catchAll → `to.meta.public` 为真 → 直接放行；
+2. `installRoleRoutes()` **永远不会执行**；
+3. 用户看到「页面不存在」。
+
+原本用来救这个场景的那段 `justInstalled && to.name === 'not-found'` 因此是**永远走不到的死代码**。
+**正确顺序：已登录 → 先装角色路由 → 再判 public。**
+
+**坑二：按 name 跳转前，目标 name 必须先注册。**
+
+守卫里有好几处 `return { name: homeRouteName(role) }`（首页、角色不匹配、已登录访问登录页）。
+如果目标路由还没注册，vue-router 会以"无匹配"**中断本次导航** —— 表现是"停在原地 / 点了没反应"，
+不是报错。`LoginView` 里那段注释（"先把角色路由注册进去，否则按 name 跳转会找不到目标"）
+说的就是这个坑，而**守卫自己当时又犯了一次**。
+
+> 同一个教训的两种形态：**"注册"必须发生在任何"消费路由表"的动作之前** ——
+> 无论是路径匹配还是按 name 解析。
+
+#### 5.6.2 注册集合必须从 `meta.roles` 推导（不变量已由测试守护）
+
+路由用数组分组（`patientRoutes` / `doctorRoutes`…）便于阅读，但**注册集合不能按分组来**：
+
+```ts
+// ❌ 曾经：手写映射 —— 会与路由自己声明的 meta.roles 漂移
+const ROUTES_BY_ROLE = { patient: patientRoutes, doctor: doctorRoutes, admin: adminRoutes }
+
+// ✅ 现在：从 meta.roles 推导
+export function routesForRole(role: Role): RouteRecordRaw[] {
+  return ALL_ROLE_ROUTES.filter((r) => !r.meta?.roles || r.meta.roles.includes(role))
+}
+```
+
+漂移的后果是**"界面里点了没反应"** —— 既不报错、也不容易联想到路由：
+
+| 路由 | `meta.roles` 声明 | 曾经只在哪一组 | 症状 |
+|---|---|---|---|
+| `preconsult-report` | patient / doctor / admin | patient 组 | **医生工作台的「AI 报告」按钮点不动** |
+| `workbench` | doctor / admin | doctor 组 | **管理员侧栏的「医生工作台」点不动** |
+
+`router.spec.ts` 里有一条**不变量**用例守着这件事：凡 `meta.roles` 声明允许某角色访问的路由，
+那个角色登录后必须真的 `hasRoute`。新增路由写错分组会立刻变红。
+
 ### 5.7 本地开发小抄
 
 | 事 | 做法 |
@@ -836,8 +961,49 @@ localStorage 可以被改，而且 token 可能已过期或被撤销。
 | 改了后端代码 | 后端没有热重载，要重启 `nub run backend:dev` |
 | 想看某个接口的原始响应 | 浏览器 Network 面板；或 `curl -H "Authorization: Bearer …"` |
 | 想看后端日志 | `backend:dev` 那个终端；日志是 JSON，含 `trace_id` |
-| 排障 | 拿响应里的 `trace_id` 去查 `GET /admin/audit-logs`（admin 账号） |
+| 排障（按追踪号定位） | 见下方 §5.7.1 |
 | 数据乱了 | `nub run deps:reset`（**会删数据卷**）+ `nub run deps:up` + `nub run backend:seed` |
+
+### 5.7.1 怎么用追踪号排障
+
+`trace_id` 是 **32 位十六进制**，同时出现在三个地方：响应头 `X-Trace-Id`、
+响应信封的 `trace_id`、以及 `audit_logs.trace_id`。界面把它拼进错误提示
+（`号源不足（追踪号 3f2a…）`），所以用户截图就够定位。**实测过的三条路**：
+
+**① 界面上直接查（最快，需要 admin）**
+
+管理看板 → 审计日志 → **追踪号**输入框（支持粘贴；大小写都行）。
+表格每行的追踪号旁边还有一个「筛选」，点一下就用它筛当前列表。
+
+**② 接口直查**
+
+```powershell
+curl -H "Authorization: Bearer <admin-token>" `
+  "http://127.0.0.1:8080/api/v1/admin/audit-logs?trace_id=3f2a1b…"
+```
+
+格式不对会返回 `40001`（不是静默忽略，见 §3.7）。
+
+**③ 直接查库（不依赖后端在跑，适合后端挂了的时候）**
+
+```powershell
+node deploy/db.mjs mysql "SELECT id,user_id,method,path,status_code,latency_ms,created_at FROM audit_logs WHERE trace_id='3f2a1b…'"
+```
+
+实测 `EXPLAIN` 走 `idx_trace`、`type=ref`、`rows=1`，是索引查找。
+
+**④ grep 后端日志**（日志是 JSON、输出到 **stderr**，没有落盘）
+
+```powershell
+# 开发：直接在 nub run dev 的 [backend] 输出里搜
+nub run backend:dev 2>&1 | Select-String "3f2a1b…"
+# 编排
+docker logs medicore-backend 2>&1 | Select-String "3f2a1b…"
+```
+
+> ⚠️ **上游传进来的 `X-Trace-Id` 会被校验**：只有 32 位十六进制才沿用（归一为小写），
+> 其它一律丢弃并生成新的。所以**响应的 `X-Trace-Id` 才是权威值** ——
+> 若你在反向代理或客户端里塞了一个不合规的值，它不会被采纳，也不会写进审计表。
 
 ---
 
@@ -867,35 +1033,159 @@ localStorage 可以被改，而且 token 可能已过期或被撤销。
 | 20 | 前端写死 `http://127.0.0.1:8080` | 生产环境失效（nginx 同源部署） | baseURL 用 `/api/v1`（§1.1） |
 | 21 | 医生工作台不展示 `has_record` | 医生看不出"还有谁没处理"，工作台失去意义 | 用 `has_record` 做筛选/标记（§3.4） |
 | 22 | 以为 `GET /schedules/:id/queue` 任意排班都能查 | 换成别人的排班 → **`40302`** | 只查自己排班的；把 40302 当正常业务分支处理 |
+| 23 | 把追踪号当 UUID 传（带连字符、大写、超长） | 后端返回 **`40001`**；而 `X-Trace-Id` 里的同类值会被**丢弃重生成** | 追踪号是 **32 位十六进制**，以响应头为准；界面上直接粘贴即可（§3.7 / §5.7.1） |
+| 24 | 以为"显示了追踪号"就等于"能按它查" | 曾经确实查不了 —— 没有任何查询入口，`idx_trace` 是死索引 | 写完排障步骤要**真的跑一遍**（§2.1 记的那次事故） |
+| 25 | 把 `public` 路由的判断写在**注册角色路由之前** | **刷新任何页面都变成「页面不存在」**（catchAll 抢走匹配后直接放行） | 已登录 → **先装路由** → 再判 public；且任何"按 name 跳转"之前目标必须已注册（§5.6.1） |
+| 26 | 按数组分组决定注册哪些路由，而不是按 `meta.roles` | 声明与实现漂移 → **医生工作台「AI 报告」、管理员「医生工作台」点了没反应** | 注册集合从 `meta.roles` 推导；`router.spec.ts` 有不变用例守着（§5.6.2） |
+| 27 | 三个角色共用同一个视图，却不区分谁能调哪个接口 | `ReportView` 让医生/管理员调用**患者专属**的 `submit` / `listMine`，并渲染跳 `preconsult-chat` 的按钮 → 403 或静默无响应 | 共用视图里**患者专属**动作要按 `role` 收起（§3.8 的表 + `ReportView.spec.ts`） |
 
 ---
 
 ## 7. 验收标准（spec G1）
 
-> **G1：三角色全流程闭环** —— 这是项目唯一还没达成的后端相关验收项，
-> 而它**只差前端**（后端接口 100% 就绪）。
+> **G1：三角色全流程闭环** —— ✅ **已达成**（2026-09-13 对真实后端实测，逐条见 §0.1）。
 
-必须能完整走通这三条：
+必须能完整走通这三条（括号内是实测结果）：
 
 ```
 患者：注册 → 登录 → 选科室/医生/排班 → 抢号（幂等）→ 我的预约看到它
       → AI 预问诊对话（SSE 打字机）→ 提交 → 轮询到报告 → 签到拿号
+      （实测：注册 200 / 抢号 200 / 同幂等键重放返回**同一条** id=31
+       / 签到拿到 queue_no=1 / SSE 13 个事件 / submit 202 / 报告 1 次轮询即 done）
 
 医生：登录 → 工作台看到该患者（has_record=false）→ 候诊队列
       → 查看 AI 报告 → 写病历 + 处方 → has_record 变 true
+      （实测：has_record false→true；队列 1 人；写病历含 2 项处方；
+       重复写病历返回 40004）
 
 管理员：登录 → 看板（ECharts：预约趋势 / 科室 TOP / 系统健康度）
-        → 审计日志（能按 trace_id 查到刚才那几次请求）→ 触发 HIS 同步 → 看同步记录
+        → 审计日志 → 触发 HIS 同步 → 看同步记录
+        （实测：审计 10 条可读；resource=appointments 筛出 5 条；
+         sync total=21 succeeded=21；sync-logs 4 条）
 ```
 
-**同时要满足的工程质量门槛**：
+**工程质量门槛（全部已满足）**：
 
-- [ ] `nub run frontend:typecheck` 通过（**零错误**，`build` 也会跑它）
-- [ ] `nub run frontend:lint` 通过
-- [ ] 所有 API 响应都有 TS `interface`，且与 §3 的字段严格对齐
-- [ ] 无新增依赖（或新增前已征得同意）
-- [ ] 无 CORS 报错（即 proxy 配对了）
-- [ ] SSE 在组件卸载时确实 `abort()`
+- [x] `nub run frontend:typecheck` 通过（**零错误零告警**）
+- [x] `nub run frontend:lint` 通过（**零错误零告警**）
+- [x] `nub run frontend:build` 通过（`vue-tsc -b && vite build`）
+- [x] `nub run frontend:test` 通过（**202 用例**；关键用例做过反向验证，见 §5.8）
+- [x] 所有 API 响应都有 TS `interface`，且与 §3 的字段严格对齐（`src/types/api.ts`）
+- [x] 运行时依赖未新增（仅开发期加了 `vitest` / `jsdom` / `@vue/test-utils` / `axios-mock-adapter`）
+- [x] 无 CORS 报错（四条代理规则实测 200）
+- [x] SSE 在组件卸载时确实 `abort()`（`usePreconsultChat` 的 `onUnmounted(abort)`）
+
+### 5.8 前端测试（vitest）
+
+```powershell
+nub run frontend:test              # 一次性跑完（202 用例，约 2.9s）
+nub --cwd frontend run test:watch  # 监听模式
+```
+
+**默认环境是 `node`**（`vite.config.ts` 里配的）。组件测试在文件首行加
+`// @vitest-environment jsdom` 单独切换，不必把整个套件都拖进 DOM 环境。
+
+| 测试文件 | 用例 | 锁住的坑 |
+|---|---|---|
+| `src/utils/sse.spec.ts` | 14 | SSE 事件块被 TCP 切成任意分片；`\r\n` **跨分片**；多字节 UTF-8 切半；结尾无空行的补发 |
+| `src/utils/prometheus.spec.ts` | 14 | 标签值里含 `}`；转义引号与逗号；NaN/±Inf 归零；无值行被跳过 |
+| `src/utils/datetime.spec.ts` | 17 | `YYYY-MM-DD HH:MM:SS` 必须按**本地时区**解析（Safari 兼容）；跨月/跨年/闰年；倒计时归零不为负 |
+| `src/api/error.spec.ts` | 12 | `trace_id` 必须带进展示文案；`40302` 与 `40301` 分开识别 |
+| **`src/api/client.spec.ts`** | **22** | **信封剥离**；202 也按 `code` 判成功；**40102 才刷新**（40101 不刷）；**并发 401 只刷一次**；刷新后**两个令牌都覆盖**；`_retried` 防死循环；认证端点不参与重试；`Retry-After` 解析；`cleanParams` 保留 `0`/`false` |
+| **`src/components/ReportPanel.spec.ts`** | **14** | **三种终态分支**（正常 / 降级 / 失败）；**降级时不得去渲染 `structured`**；`red_flags` 高亮与空态；`urgency` 三档；`report=null` 的加载态 vs 空态 |
+| **`src/api/contract.spec.ts`** | **31** | HTTP 层的**契约形状**：成功判定用 `code === 0`（**202 也算成功**）；`next_cursor` 缺失而非 `null`；空列表是 `[]` 不是 `null`；`queue_no` / `checked_in_at` 的可选性；`consult_fee` 是字符串；时间格式 `YYYY-MM-DD HH:MM:SS`；`40005` / `40002` / `40302` 的 HTTP→code 映射 |
+| **`src/composables/useCursorList.spec.ts`** | **13** | 用 **`has_more` 而非 `items.length === size`** 判有无下一页；`cursor` 只在非首页带上；并发 `loadMore` 不得重复请求；错误后 `loading` 必须复位；`reset()` 清空列表与游标；卸载时断开 `IntersectionObserver` |
+| **`src/composables/usePreconsultChat.spec.ts`** | **14** | SSE 打字机把 `delta` **追加**而非替换；`error` 事件（流已 200）也要变成可见错误；**流未开始时的 JSON 信封**（非 `text/event-stream`）按 §2.1 解析；`onUnmounted` 必须 `abort()`；历史恢复的顺序与 `role` 映射 |
+| **`src/stores/auth.spec.ts`** | **18** | 登录态的边界：**必须真的打 `/auth/me`**（不能只信本地存的角色）；`/auth/me` 失败要**清掉令牌**而不是留着；`logout` 服务端撤销失败也要清本地（`finally` 分支）；令牌**两个都覆盖**；注册失败不接着登录；`reset` 与 `logout` 的区别（前者不发请求） |
+| **`src/router/router.spec.ts`** | **22** | **刷新即 404**（catchAll 带 `public`，把角色路由注册挡在门外）；**按 name 跳转前目标必须先注册**；不变量：**`meta.roles` 声明允许的角色必须真的注册到那条路由**；未登录深链接去登录而不是 404；登出后角色路由确实消失 |
+| **`src/views/ReportView.spec.ts`** | **11** | 三角色共用页里的**患者专属动作**：医生/管理员不得调 `submit` / `listMine`，也不得渲染「返回对话」；患者侧三个动作照常可用 |
+
+`client.spec.ts` 用 `vi.mock('axios')` 把拦截器函数**捕获下来直接调用** ——
+拦截器本身就是纯函数，比搭假 HTTP 服务器更贴近被测逻辑。
+注意 `vi.mock` 会被提升到 import 之前，共享状态必须用 `vi.hoisted` 声明。
+
+`contract.spec.ts` 反过来：它**真的要发请求**，所以用 `axios-mock-adapter` 挂在
+真实的 axios 实例上。两者互补 —— 前者测"拦截器逻辑"，后者测"我们的 TS interface
+与后端实际吐出来的 JSON 是否对得上"。
+`axios-mock-adapter` 与 `mockjs` 都是开发期依赖；**`mockjs` 目前刻意未使用** ——
+契约测试要的是**确定性夹具**，随机数据会让断言失去意义。需要它时再说。
+
+**写新用例时请遵守三条**（都来自本项目的实际教训）：
+
+1. **断言基于字段值，不要基于绝对时间戳** —— 否则结果随机器时区变化
+   （CI 是 UTC，本机是 Asia/Shanghai）。
+2. **加了关键用例要做反向验证**：故意改坏实现，确认用例真的变红。
+   本轮验证记录（每次都**只**命中预期的那几条）：
+   - 去掉 SSE「尾部补发」→ `sse.spec.ts` 1 条失败
+   - `lastIndexOf('}')` → `indexOf('}')` → `prometheus.spec.ts` 1 条失败
+   - **去掉刷新去重**（`if (!refreshing)` → `if (true)`）→ 「并发只刷一次」1 条失败
+   - **恢复 `status ?? 'pending'` 并去掉 null 分支** → 2 条 null 报告用例失败
+   - `has_more` → `items.length === size` → `useCursorList.spec.ts` 2 条分页用例失败
+   - **去掉 `onUnmounted(abort)`** → `usePreconsultChat.spec.ts` 1 条卸载用例失败
+   - **丢掉 `date` 查询参数** → `contract.spec.ts` 3 条排班用例失败
+   - **`bootstrap` 改成读 localStorage 里的角色（不打 `/auth/me`）** → `auth.spec.ts` 2 条失败
+   - **`bootstrap` 的 catch 里去掉 `clearTokens()`** → `auth.spec.ts` 1 条失败
+   - **`logout` 去掉 `try/finally`** → `auth.spec.ts`「服务端撤销失败也要清干净本地」1 条失败
+   - **把 `public` 判断挪回注册之前** → `router.spec.ts` **15 条失败**（含患者/医生/管理员三侧刷新）
+   - **`routesForRole` 改回按数组分组** → `router.spec.ts` 4 条失败（不变用例直接点名 `preconsult-report` 声明了 doctor 却没注册）
+   - **去掉 ReportView 的角色判断** → `ReportView.spec.ts` 6 条失败（"医生/管理员不该调用患者专属的 submit"）
+   **一条不会失败的测试等于没有测试。**
+3. **失败时先问"是我的期望错了吗"**。本轮有 4 次失败，其中 **2 次是测试本身写错**
+   （把消息总数写成患者发言数；用 `toThrow` 断言一个返回 Promise 的拦截器）。
+   写 `auth.spec.ts` 时又踩了一次同类的：`beforeEach` 里写 `localStorage.clear()`，
+   但 `api/tokens.ts` 有一份**模块级内存副本**（localStorage 不可用时的退化路径），
+   它跨用例存活 —— **必须调 `clearTokens()`** 才能清干净。模块级状态不会随 DOM 重置。
+
+> 测试文件放在 `src/**/*.spec.ts`（与源码同目录）。
+> 它们会被 `vue-tsc` 与 `eslint` 覆盖（这是好事），但**不会进生产产物** ——
+> Vite 只打包被 import 的模块，已实测 `dist/assets` 里没有测试代码。
+
+### 5.9 测试抓到的一个真实缺陷（值得一读）
+
+写 `ReportPanel.spec.ts` 时暴露了两件事，都不是"测试写错"，而是组件真的有问题：
+
+1. **`loading` 是个死参数** —— 它声明在 `defineProps` 里，但模板从头到尾没用过。
+2. **`report === null` 被显示成"AI 正在生成结构化总结"** ——
+   因为 `status` 写的是 `props.report?.status ?? 'pending'`。
+   后果：若那次请求其实**失败了**，用户会一直等一个永远不会来的结果。
+
+**修法**：`status` 不再默认成 `'pending'`；模板最前面加
+`v-if="!report"`，并真正用上 `loading` 来区分「正在加载」与「确实没有」。
+
+**为什么值得单独记一条**：这两个问题在浏览器里**都看不出来** ——
+正常流程下 `report` 很快就有值，`loading` 也一直是 `true`。
+只有把"空 + 加载完"这个组合显式构造出来才会暴露。
+
+### 7.1 本次**没有**验证的部分（下一个接手的人请注意）
+
+- **渲染层没有在浏览器里打开过**（路由与角色这一层已由 `router.spec.ts` / `ReportView.spec.ts` 覆盖 —— 那是踩过一次真实事故之后补的）：以上结论来自 HTTP 层（经 Vite 代理 **与**
+  生产编排的 nginx）+ 静态检查，**没有**验证过渲染结果、移动端实际布局、
+  ECharts 绘制是否正常。这些需要在浏览器里人工走一遍。
+  最快的方式是起生产编排：`nub run stack:init && nub run stack:up && nub run stack:seed`。
+  > **本机浏览器事实（实测，省得再查一遍）**：只装了 **Microsoft Edge**
+  > （`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`，v153），**没有 Chrome**；
+  > 没有 playwright / puppeteer 的任何缓存。**Node 24 自带全局 `WebSocket`** ——
+  > 也就是说"CDP 驱动浏览器"这件事**零依赖**就能做（CDP = WebSocket + JSON）。
+  > 想给 agent 接浏览器时，官方 `chrome-devtools-mcp` 的文档明确支持 Edge
+  > （`--executablePath` 指上面那个 exe 即可）。**但任何 npm 下载都会走
+  > `HTTPS_PROXY=127.0.0.1:2333` 那个计费代理，装之前先问。**
+  >
+  > **一个重要的事实**：`http://127.0.0.1:3080`（DSH Web GUI）对**没有凭据的浏览器**
+  > 只会返回一行 `dsh web authentication required; reopen the URL printed by dsh web.`
+  > 所以"让 agent 截个图看界面"这条路，对 **3080 这个 GUI 本身不成立**；
+  > 对 `5173` / `8090` 的前端**没有这个限制**。
+- **`fallback=true` 的降级分支未经活体触发**：本项目的 LLM 是 mock，实测恒为
+  `fallback=false`。该分支的代码路径（改展示 `conversation` 原始对话）是照 §3.5 的契约写的，
+  但**没有被真实数据走到过** —— 现在它由 `ReportPanel.spec.ts` 按契约形状覆盖（3 条用例），
+  算是有了防线，但**仍然没有真实样本验证过后端的实际输出**。
+- **`/readyz` 的 503 分支未经活体触发**：MySQL/Redis 一直是健康的。
+  要验证可以 `nub run deps:down` 后再看管理看板的健康面板。
+- **`40002`（号源不足）未经活体触发**：需要把某个排班的 `remaining` 抢到 0 才能复现。
+
+> **一个工具链上的坑（实测踩到）**：`frontend:dev` 运行期间，如果编辑工具用
+> "临时文件 + 重命名"的方式原子写 `frontend/` 下的文件，Vite 的 FSWatcher 可能对那个
+> 临时文件抛 `EBUSY` 并**让 dev server 直接退出**。改文档时尤其容易撞上。
+> 遇到时重启 dev server 即可，与代码无关。
 
 ---
 
@@ -903,7 +1193,7 @@ localStorage 可以被改，而且 token 可能已过期或被撤销。
 
 | 不要 | 为什么 |
 |---|---|
-| 改后端接口来迁就前端 | 后端契约已冻结且被 60 个集成测试 + 251 个单元测试守护。要改先与后端确认，那会是一轮独立改动 |
+| 改后端接口来迁就前端 | 后端契约已冻结且被 67 个集成测试 + 268 个单元测试守护。要改先与后端确认，那会是一轮独立改动 |
 | 在前端做脱敏 | §2.9：患者姓名**刻意不脱敏**，打码会破坏医生工作台 |
 | 引入 UI 之外的依赖（图表库已有 echarts、组件库已有 element-plus） | §5.2 的硬约束 |
 | 用 `npm`/`pnpm` 装依赖 | §5.1 |
@@ -918,7 +1208,7 @@ localStorage 可以被改，而且 token 可能已过期或被撤销。
 | 想知道什么 | 看哪里 |
 |---|---|
 | **接口契约**（权威） | `backend/internal/router/router.go` + `backend/internal/model/*.go` + `backend/internal/handler/*.go` |
-| 端点行为与错误码的实测记录 | `backend/test/integration/`（60 个用例，是行为的活文档） |
+| 端点行为与错误码的实测记录 | `backend/test/integration/`（67 个用例，是行为的活文档） |
 | 某个模块为什么这么设计 | `docs/MODULES.md` 对应章节 |
 | 后端有哪些坑、怎么诊断 | `docs/PITFALLS.md`（先看 §0 的判据表） |
 | 项目整体状态与未完成项 | `docs/FIXES.md` §1、`docs/HANDOVER.md` §3 |
@@ -936,5 +1226,5 @@ localStorage 可以被改，而且 token 可能已过期或被撤销。
 **后端是完备的、契约是冻结的、陷阱是已知的。**
 你要做的是：**先配 Vite proxy**（否则一步都走不动），
 **按 §3 的表写 TS interface 与 api 层**，
-**把 §6 的 22 条陷阱当成必读清单**，
+**把 §6 的 27 条陷阱当成必读清单**，
 然后才有资格开始写页面。别引入新依赖，别改后端。
