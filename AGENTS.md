@@ -197,6 +197,7 @@ MediCore/
 │   ├── sql-optimization.md  # ★ SQL/索引实测：EXPLAIN + IGNORE INDEX 反向验证
 │   ├── ONBOARDING.md        # ★★ **新人从零上手**：跑起来 → 业务 → 架构 → 取舍（接手先读这份）
 │   ├── FIRST-TASKS.md       # ★★ **新人动手**：5 个由易到难的真实任务，每个含验收标准
+│   ├── PRINCIPLES.md        # ★★ **设计原则与最佳实践**：为什么这样设计 + 怎么发现自己做错了
 │   ├── contract-sync.md     # ★ **待做方案存档**：前后端契约同步（生成 + 检测），尚未实施
 │   ├── ai-vibe-coding/      # ★ spec §10.3 交付物：WORKFLOW + 提示词指针 + 6 篇逐模块 review
 │   └── benchmark/           # ★ 性能基准报告（含复现命令与环境说明）
@@ -667,7 +668,7 @@ v1 用 `linters-settings` / `issues.exclude-rules`，v2 用 `version: "2"` +
 
 | 你是谁 | 先读什么 |
 |---|---|
-| **第一次接触这个项目的人**（基础一般） | **`docs/ONBOARDING.md`** → 然后 **`docs/FIRST-TASKS.md`** 动手 |
+| **第一次接触这个项目的人**（基础一般） | **`docs/ONBOARDING.md`**（读懂它）→ **`docs/PRINCIPLES.md`**（懂原则）→ **`docs/FIRST-TASKS.md`**（动手） |
 | 熟悉的工程师 / agent | `docs/HANDOVER.md`（开发历程与教训）→ `docs/ARCHITECTURE.md` → `docs/MODULES.md`（改代码前查）→ `docs/PITFALLS.md`（写代码前扫） |
 | 只想看质量状态 | `docs/FIXES.md` §1 / §2 |
 
