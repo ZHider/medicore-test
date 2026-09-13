@@ -12,8 +12,8 @@
 定位是**展示全栈工程能力与 AI Vibe Coding 实践**的求职项目，因此代码质量与"过程留痕"同等重要。
 
 - **规格来源**：`spec.md`（Single Source of Truth，v2.0）
-- **当前状态**：后端 M1–M6 全部完成并通过实测（29 个端点）+ 一次全量代码审视；前端仅有脚手架；未做全栈 compose 编排
-- **规模**：生产 86 文件 / 9730 行；测试 42 文件 / 7553 行；311 个用例（251 单元 + 60 集成）全部通过
+- **当前状态**：后端 M1–M6 全部完成并通过实测（29 个端点）+ 一次全量代码审视；前端页面**全部完成并实测**；**全栈 compose 编排已完成**（`deploy/compose.yml`，一键起 mysql+redis+backend+nginx）
+- **规模**：生产 86 文件 / 9730 行；测试 42 文件 / 7553 行；后端 **268 个单元 + 67 个集成**用例全部通过；前端另有 202 个 vitest 用例（12 个文件）<br>（口径：顶层 `Test`/`Fuzz` 函数数。自测命令 `go test ./... -v | grep -c "^--- PASS"`，改动测试后请顺手更新本行）
 - **覆盖率**：整体 34.2%（`service` 79.6% 是核心保障）；`repository` 6.4% 是按包统计的假象，**集成口径 67.5%**
 - **静态检查**：`go vet` / `staticcheck` / `deadcode` 三者均为 0 告警；另有 `.golangci.yml`（v2 格式，实测 v2.13.2 **0 issues**），一键入口 `nub run backend:lint`
 
@@ -22,22 +22,37 @@
 ## 1. 立刻要做的三件事
 
 ```bash
-# 1) 起依赖（mysql + redis，首次自动执行 docs/schema.sql）
-nub run deps:up                    # 等价于 docker compose -f deploy/compose.dev.yml up -d
+# 1) 复制开发环境变量（根 .env，已被 .gitignore 排除；nub 会自动加载它）
+#    Windows: copy .env.example .env      POSIX: cp .env.example .env
 
-# 2) 生成本地密钥（仓库中不含任何密钥，首次必须做）
+# 2) 起依赖（mysql + redis，首次自动执行 docs/schema.sql）
+nub run deps:up                    # 等价于 compose up -d --wait --wait-timeout 120
+
+# 3) 生成本地密钥（仓库中不含任何密钥，首次必须做）
 cd backend && go run ./cmd/genlocal && cd ..
-
-# 3) 跑测试确认环境正常
-nub run backend:test               # 单元测试，251 个用例，不需要外部依赖
 ```
 
-要跑集成测试还需环境变量：
+**要开发就跑这一条**（依赖 + 后端 + 前端，一条命令三个进程）：
+
+```bash
+nub run dev
+```
+
+输出按 `[backend]` / `[frontend]` 前缀分色，`Ctrl+C` 一次全部停掉（实测无残留进程）。
+想分开控制就还是开三个终端跑 `deps:up` / `backend:dev` / `frontend:dev`。
+
+跑测试确认环境正常：
+
+```bash
+nub run backend:test               # 单元测试，268 个用例，不需要外部依赖
+```
+
+要跑集成测试还需要 mysql 口令（根 `.env` 已提供，但显式设一次更保险）：
 
 ```bash
 # Windows PowerShell
 $env:MEDICORE_MYSQL_PASSWORD='medicore123'
-nub run backend:test:integration   # 60 个用例，需要 mysql + redis 在运行
+nub run backend:test:integration   # 67 个用例，需要 mysql + redis 在运行
 ```
 
 **改了数据库结构后**补一次演示数据：`nub run backend:seed`。
@@ -74,7 +89,7 @@ grep -rn "gin.Context" backend/internal/service
 `service` 在 `deps.go` 里声明**它所需的最小能力接口**（`userStore` / `stockStore` / `reportStore`…），
 不依赖 `repository` 的具体类型。`repository` 的具体类型隐式满足这些接口。
 
-**好处**：service 单测可注入内存实现，完全不依赖 MySQL/Redis（这是 251 个用例能秒级跑完的原因）。
+**好处**：service 单测可注入内存实现，完全不依赖 MySQL/Redis（这是 268 个用例能秒级跑完的原因）。
 
 **新增 service 依赖时**：在 `deps.go` 加接口 + 加内存 fake，**不要**直接引用 `*repository.XxxRepo`。
 
@@ -184,6 +199,7 @@ MediCore/
 │   ├── ai-vibe-coding/      # ★ spec §10.3 交付物：WORKFLOW + 提示词指针 + 6 篇逐模块 review
 │   └── benchmark/           # ★ 性能基准报告（含复现命令与环境说明）
 ├── backend/
+│   ├── Dockerfile           # ★ 多阶段构建：GOMODCACHE 绑定挂载 + GOPROXY=off（构建期零网络）
 │   ├── cmd/                 # server / genlocal / seed / loadtest
 │   ├── configs/
 │   ├── prompts/             # 版本化提示词与 JSON Schema（go:embed）
@@ -196,9 +212,16 @@ MediCore/
 │   │   └── apperr/ authctx/ errcode/ jwt/ logger/ mask/
 │   │       metrics/ response/ secret/ traceid/     # 无状态工具包
 │   └── test/integration/    # HTTP 集成测试（-tags=integration）
-├── frontend/                # Vue3 + TS 5.9 脚手架（**未开发页面**）
+├── frontend/                # Vue3 3.5 + TS 5.9，全部页面已实现（响应式，PC + 移动端）
+│   ├── Dockerfile           # ★ 只做打包：nginx + COPY dist（前端产物在宿主机构建）
 │   └── AGENTS.md            # ★ **给前端 agent 的交接文档**（接口契约 / 陷阱 / 验收标准）
-├── deploy/compose.dev.yml   # 本地依赖服务
+├── deploy/
+│   ├── compose.yml          # ★ 全栈编排：mysql + redis + backend + nginx（唯一入口）
+│   ├── compose.dev.yml      # 本地**依赖**服务（映射端口，供 go run 直连）
+│   ├── init-env.mjs         # ★ 生成 deploy/.env（CSPRNG 密钥 + 探测端口/GOMODCACHE）
+│   ├── nginx/default.conf   #    SPA 回退 + /api 反代 + SSE 关缓冲
+│   ├── nginx/security-headers.conf
+│   └── README.md            # ★ 编排的用法、取舍与排障
 └── package.json             # 统一任务入口（nub run）
 ```
 
@@ -247,10 +270,12 @@ worker → XREADGROUP → 抢占 → LLM 总结 → Schema 校验 → 失败重�
 
 | 命令 | 作用 |
 |---|---|
-| `nub run deps:up` / `deps:down` / `deps:reset` | 起/停/重置依赖服务（reset 会删数据卷） |
-| `nub run backend:dev` | 启动后端（需 `MEDICORE_MYSQL_PASSWORD=medicore123`） |
-| `nub run backend:test` | 单元测试（251 用例，无需外部依赖） |
-| `nub run backend:test:integration` | 集成测试（60 用例，需依赖服务 + 口令环境变量） |
+| **`nub run dev`** | **一条命令起开发三件套**：deps（等健康）+ 后端 + 前端，输出带 `[backend]`/`[frontend]` 前缀，`Ctrl+C` 全停 |
+| `nub run deps:up` / `deps:down` / `deps:reset` | 起/停/重置依赖服务（`up` 现在用 `--wait` 等健康检查通过；reset 会删数据卷） |
+| `nub run backend:dev` | 启动后端（口令由根 `.env` 自动提供；分开调试时用） |
+| `nub run frontend:dev` | 启动前端（`nub --cwd frontend run dev`，Vite HMR） |
+| `nub run backend:test` | 单元测试（268 用例，无需外部依赖） |
+| `nub run backend:test:integration` | 集成测试（67 用例，需依赖服务 + 口令环境变量） |
 | `nub run backend:vet` / `backend:fmt` | 静态检查 / 格式化 |
 | `nub run backend:lint` / `backend:lint:fix` | **golangci-lint**（需 `go install`，见 `HANDOVER.md` §6）；当前 0 issues |
 | `nub run backend:vuln` | **漏洞扫描**（需先装 govulncheck） |
@@ -262,11 +287,41 @@ worker → XREADGROUP → 抢占 → LLM 总结 → Schema 校验 → 失败重�
 | `nub run backend:seed` | 灌入演示数据（幂等） |
 | `nub run backend:loadtest` | 并发超卖压测 |
 | `nub run frontend:dev` / `build` / `typecheck` / `lint` | 前端 |
+| **`nub run stack:init`** | **生成 `deploy/.env`**（CSPRNG 密钥 + 探测空闲端口 + GOMODCACHE），默认拒绝覆盖 |
+| **`nub run stack:up`** | **一键起全栈**：构建前端产物 → 构建镜像 → 起 mysql+redis+backend+nginx，**并等四个服务全 healthy**（`--wait` —— 不等的话会让人以为起来了，其实数据库还没就绪） |
+| **`nub run stack:seed`** | 给编排里的数据库灌演示数据（复用 backend 镜像，`tools` profile） |
+| `nub run stack:down` / `stack:reset` | 停止 / 停止并删数据卷 |
+| `nub run stack:ps` / `stack:logs` | 容器状态 / 跟踪日志 |
+| **`nub run lint`** | 聚合静态检查：`backend:vet` + `frontend:lint` + **`frontend:typecheck`**（三者全零错误才通过） |
+| **`nub run test`** | 聚合测试：`backend:test` + `frontend:test`（后端 268 + 前端 202 用例） |
 
 **启动后端的完整命令**（Windows PowerShell）：
 ```powershell
 $env:MEDICORE_MYSQL_PASSWORD='medicore123'; cd backend; go run ./cmd/server
 ```
+
+### 4.1 命名与语义约定（加脚本时请保持一致）
+
+1. **`<域>:<动作>`** —— 域是 `backend` / `frontend` / `deps` / `stack`，
+   动作是 `dev` / `build` / `test` / `lint` / `up` / `down` / `seed` …
+2. **无冒号的顶层脚本 = 复合命令** —— `dev` / `lint` / `test`，一次跑多个域。
+   它们不是"域"，所以不加前缀（`dev` 之于 `backend:dev`+`frontend:dev`，
+   正如 `lint` 之于 `backend:vet`+`frontend:lint`）。
+
+**`up` 的语义统一为"起到可用为止"**：`deps:up` 与 `stack:up` 都带 `--wait`，
+返回时服务已健康。这是刻意的 —— 否则紧跟其后的命令（`backend:dev`、`stack:seed`）
+会撞上"容器起来了但数据库还没就绪"，报一个与真实原因无关的错。
+
+**两处刻意保留的不对称**（是权衡，不是遗漏）：
+
+| 不对称 | 原因 |
+|---|---|
+| `backend:build` 只做编译检查（`go build ./...`，不留产物），`frontend:build` 产出 `dist/` | 前端需要真实产物给 nginx（`stack:up` 依赖它）；后端产物由 Dockerfile 的 `go build -o` 负责，日常只需要"能不能编译过" |
+| `stack:*` 有 `ps`/`logs`/`db`/`redis`/`dump`，`deps:*` 没有对应项 | dev 依赖只有两个容器且端口已映射到宿主机，直接用 `node deploy/db.mjs --dev` 或原生 `docker exec` 更直接，再加一层脚本是冗余 |
+
+> **`test` 曾经只覆盖后端**（当时前端没有测试套件）。前端补上 vitest 之后
+> `nub run test` 已经是 `backend:test && frontend:test` 两段 —— 这一行的旧说明留在
+> 这里是为了提醒：**改了 `test` / `lint` 的组成就要同步改本节**，否则文档会先于代码过期。
 
 ---
 
@@ -593,16 +648,18 @@ v1 用 `linters-settings` / `issues.exclude-rules`，v2 用 `version: "2"` +
 
 | 优先级 | 项 | 说明 |
 |---|---|---|
-| **高** | 前端页面 | 仅有脚手架。spec §8 要求登录/挂号/AI 对话/医生工作台/管理看板（后端接口已全部就绪）。**接手前先读 `frontend/AGENTS.md`** —— 里面是接口契约、22 条陷阱与验收标准 |
-| **高** | 全栈 compose 编排 | 目前只有依赖服务的 compose，缺 nginx + 前后端镜像 |
-| 中 | AI Vibe Coding 交付物 | **后端部分已完成**：`docs/ai-vibe-coding/`（WORKFLOW + prompts + **6 篇**逐模块 review，覆盖 M1–M6）。**遗留**：前端还没有页面，因此没有前端 review；review 的"遗留与未验证"节里记的缺口见各篇 §六 |
+| ~~高~~ | ~~前端页面~~ | ✅ **已完成**：三角色全部页面 + axios 封装 + 按角色动态路由 + ECharts 看板。详见 `frontend/AGENTS.md` §0.1（含实测结论）与 §7.1（含**未验证项**） |
+| ~~高~~ | ~~全栈 compose 编排~~ | ✅ **已完成**：`deploy/compose.yml` + `backend/Dockerfile` + `frontend/Dockerfile` + nginx 配置。`stack:init` → `stack:up` → `stack:seed` 三步起全栈。详见 `deploy/README.md` |
+| 中 | **浏览器人工验收** | 页面渲染、移动端布局、ECharts 绘制仍需人工走一遍（`frontend/AGENTS.md` §7.1 列了清单）。<br>**但"路由与角色"这一块已经不再依赖人工**：一次真实事故（admin 刷新看板 → 「页面不存在」）暴露出守卫判断顺序与"声明/注册不一致"两类缺陷，现已由 `router.spec.ts`（22 例，含一条 `meta.roles` 不变量）与 `ReportView.spec.ts`（11 例）覆盖，见 `docs/FIXES.md` H6/H7/M6。<br>**教训**：这类缺陷**不报错、不崩溃**，只是功能静默失效 —— "页面能打开"不等于"功能可用"，必须对**角色 × 动作**逐一断言 |
+| 中 | 编排的异常路径验证 | 未测过"依赖挂掉"的表现：`docker compose -f deploy/compose.yml stop mysql` 后 `readyz` 是否转 503、backend 是否变 unhealthy |
+| 中 | AI Vibe Coding 交付物 | **后端部分已完成**：`docs/ai-vibe-coding/`（WORKFLOW + prompts + **6 篇**逐模块 review，覆盖 M1–M6）。**遗留**：前端页面已完成但还没有前端 review |
 | 中 | 性能证据文档 | `docs/benchmark/`（17 项基准）与 `docs/sql-optimization.md`（25 条查询实测 + 索引反向验证）**均已成型**。遗留：`sql-optimization.md` §4.4 记的 cron 扫描优化（当前代价可接受，触发条件已写明） |
 | 中 | **按角色横切复查** | **三角色已全部查完**：医生角色发现并修了 2 处规格缺口（`docs/MODULES.md` §6.7）；患者/管理员角色复查结论为**无新缺口**（逐端点证据见 `sql-optimization.md` 与 `MODULES.md`）。后续新增返回他人数据的端点时，仍按此清单扫一遍 |
 | 中 | **前后端契约同步（方案已存档，未实施）** | `docs/contract-sync.md` —— 让前端动态/同步/可靠地拿到**接口与数据结构**。核心判断：**生成解决"省事"，测试解决"可信"**。建议先做 L1（契约金文件 + 双向测试，**零新依赖**，约 270 行）。**需要时再按该文档 §6 执行** |
 | 中 | `golangci-lint` 配置 | 见 §4 命令与仓库根 `.golangci.yml` |
 | 中 | CI 首次运行验证 | workflow 已落地并通过 YAML 解析与结构校验，但**从未在 GitHub 上真跑过**（仓库未 push）。首次 push 后需要盯一次 |
 | 低 | `repository` 层覆盖率 | 按包统计 6.4%（假象）；集成口径 **67.5%**。仍为 0% 的主要是缓存命中路径与目录只读查询 |
-| 低 | fuzz 目标可再扩 | 目前覆盖 secret/jwt/audit/mask/model/service 的 11 个目标；`llm` 的流式分片解析、`config` 的取值解析尚未纳入 |
+| 低 | fuzz 目标可再扩 | 目前覆盖 secret/jwt/audit/mask/model/service/**traceid** 的 13 个目标；`llm` 的流式分片解析、`config` 的取值解析尚未纳入 |
 
 **接手前建议先读**：`docs/HANDOVER.md`（开发历程与教训）→ `docs/ARCHITECTURE.md`（架构细节）
 → `docs/CODE-REVIEW.md`（当前质量状态与已知短板）。

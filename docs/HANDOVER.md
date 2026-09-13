@@ -687,23 +687,29 @@ fmt.Sprintf("IT%d", time.Now().UnixNano()%100000)   // 只有 10 万种取值
 
 | 项 | 现状 | spec 依据 |
 |---|---|---|
-| **前端页面** | 仅有 create-vue 脚手架（`App.vue` 还是模板） | §8 要求登录/挂号/AI 对话/医生工作台/管理看板。**交接文档已就绪：`frontend/AGENTS.md`**（接口契约 / 22 条陷阱 / 验收标准 / TS 类型约定） |
-| **全栈 compose 编排** | 只有 `deploy/compose.dev.yml`（依赖服务），缺 nginx + 前后端镜像 | §11.2、G5「一键起全栈」 |
+| ~~前端页面~~ | ✅ **已完成**（2026-09-13）：三角色全部页面 + axios 封装（双令牌刷新去重）+ 按角色动态路由 + ECharts 看板。`typecheck`/`lint`/`build` 零错误零告警，并对真实后端跑通了三角色闭环。详见 `frontend/AGENTS.md` §0.1 / §7 | §8 |
+| ~~全栈 compose 编排~~ | ✅ **已完成**（2026-09-13）：`deploy/compose.yml` + `backend/Dockerfile` + `frontend/Dockerfile` + `deploy/nginx/`。`stack:init` → `stack:up` → `stack:seed` 三步起全栈；实测四容器全部 healthy、SSE 经 nginx 未被缓冲。详见 `deploy/README.md` | §11.2、G5「一键起全栈」 |
+
+> **两项高优先级已完成**，当前没有阻塞性未完成项。剩下的都是"验证类"工作，见 §3.2。
 
 ### 3.2 中优先级
 
 | 项 | 说明 |
 |---|---|
-| 前端管理看板拉 `/metrics` | spec §8.1 要求 ECharts 渲染系统健康度 |
+| **浏览器人工验收** | 前端与编排的**全部结论都来自 HTTP 层 + 静态检查，没有在浏览器里打开过**。页面渲染、移动端布局、ECharts 绘制需要人工走一遍（清单见 `frontend/AGENTS.md` §7.1） |
+| 前端三处未走到的分支 | `fallback=true` 降级分支（mock LLM 恒返回 `fallback=false`）、`/readyz` 的 503 分支、`40002` 号源不足 —— 代码照契约写了，但**没有被真实数据走到过** |
+| 编排的异常路径 | 未测过"依赖挂掉"：`docker compose -f deploy/compose.yml stop mysql` 后 `readyz` 是否转 503、backend 是否变 unhealthy |
 | **软件供应链**：`golangci-lint` 未纳入 `go.mod` 工具依赖 | 已装本机 v2.13.2 并进 CI（`go install ...@v2.13.2`），但**版本号写在 `ci.yml` 里而不是 `go.mod` 的 `tool` 指令**。将来 Go 的 tool directive 或 `mise`/`aqua` 能统一管理时应收敛 |
 | `docs/sql-optimization.md` §4.4 的 cron 扫描 | 当前读 4000 行拿 200 条（1.48 ms）**可接受**，故未改。**触发条件已写明**：pending 占比降到 1% 以下时应把 `ORDER BY id` 改为 `ORDER BY expire_at`，让 `idx_status_expire` 变成 range 扫描 |
 
 > **已完成（本轮移出）**：
+> - **前端页面**（spec §8）—— 见 §3.1；前端管理看板已拉 `/metrics` 做 ECharts 健康度。
+> - **全栈 compose 编排**（spec §11.2）—— 见 §3.1。
 > - `docs/sql-optimization.md` —— 25 条业务查询的 EXPLAIN/EXPLAIN ANALYZE + 3 组索引反向验证。
 > - `golangci-lint` 配置 —— `.golangci.yml`（v2）+ `nub run backend:lint` + CI 关卡，实测 0 issues。
 > - **按角色横切复查** —— 三角色已全部查完；患者/管理员结论为无新缺口（医生角色此前修了 2 处）。
 > - **`docs/ai-vibe-coding/`（G6）** —— WORKFLOW + prompts 指针 + **6 篇**逐模块 review（M1–M6）。
->   **性质是事后整理**，来源逐条标注；前端无页面故无前端 review。
+>   **性质是事后整理**，来源逐条标注；前端页面已完成但仍缺前端 review。
 
 ### 3.3 低优先级 / 可选
 

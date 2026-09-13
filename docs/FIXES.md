@@ -68,8 +68,13 @@
 
 ## 二、缺陷总账（按严重度）
 
-共 **14 处缺陷**：2 处 HIGH/安全，5 处功能性，7 处一致性/边界。
+共 **19 处缺陷**：6 处 HIGH/安全，6 处功能性，7 处一致性/边界。
 每一条都注明了**怎么发现的**——这比缺陷本身更有参考价值。
+
+> **H4 与 H5 是同一轮里、由同一个问题牵出来的**：本来只是想搞清楚
+> "错误追踪号到底怎么用"，结果发现它**既查不到**（H5）**又不安全**（H4）。
+> 两条都不在任何测试的覆盖范围内，而且都**不报错** —— 一条是静默少写数据，
+> 一条是功能看起来正常工作（界面显示得好好的），只是查不回来。
 
 ### 🔴 高：会导致静默故障或信息泄露
 
@@ -107,6 +112,60 @@
 | **为何最危险** | 它是本项目唯一一类**不改变任何测试结果**的错误：所有测试照旧全绿，只有"证据的可信度"被掏空。而且它天然符合预期 —— 本来就期望"没发现竞争"，"什么都没跑"恰好也是"没发现竞争" |
 | **推广** | 任何**检测类**命令（race / fuzz / lint / vuln）都要问：**"如果它什么都没做，我会看出来吗？"** 看不出来就得加产出断言（判据选**内容**，不选退出码） |
 
+#### H4 · 追踪号可被客户端伪造，用来抹掉整批审计记录
+
+| | |
+|---|---|
+| **位置** | `internal/middleware/trace.go` + `internal/audit/audit.go` |
+| **症状** | 一个**未认证**请求带上超长的 `X-Trace-Id`，就能让包含它的那一批审计记录**整批**插入失败（`BatchSize = 100`，含其他用户的记录） |
+| **根因** | 三段串起来才成立：① `TraceID` 是**全局**中间件，排在认证**之前**，`X-Trace-Id` 由客户端完全控制；② 该值被原样写进 `audit_logs.trace_id CHAR(32) CHARACTER SET ascii`；③ 审计是**批量**写入的，MySQL 严格模式下 `Data too long` 让整条多行 `INSERT` 失败 |
+| **实测证据** | `ERROR 1406 (22001): Data too long for column 'trace_id' at row 2`，且同批**合法的那一行也没进去**（`rows before = 132 → after = 132`） |
+| **修复** | ① 信任边界：`traceid.Sanitize` —— 只有 32 位十六进制才沿用（归一为小写），否则丢弃重生成，**绝不截断**（截断会造出一个"看起来合法"的假追踪号）。② 审计层再走一次同样的净化作为第二道防线，因为失败模式是"带走一批" |
+| **验证** | 单测 6 例 + 中间件 5 例 + 集成 4 例；两个新 fuzz 目标（`FuzzSanitize` / `FuzzIsValid`）各跑 20s、合计 **1400 万次执行无失败**；反向验证：`TraceID()` 改回原样透传 → 3 条单测 + 集成用例变红 |
+| **为何长期未发现** | 与 `FuzzTruncate` 修的是**同一个失败模式**（那边是 `User-Agent`），`truncate()` 的注释里甚至已经写明"一个构造出来的请求就能带走一批审计记录"。**修法只套到了当时出问题的那一个字段上**，没有回头把所有"客户端可控 + 写入定长列"的字段一起扫一遍 |
+
+#### H5 · 追踪号只显示不查询 —— 文档承诺了一个不存在的功能
+
+| | |
+|---|---|
+| **位置** | `internal/handler/audit.go` / `internal/service/audit.go` / `internal/repository/audit.go` / `AdminAuditLogsView` |
+| **症状** | 界面把追踪号拼进每个错误提示（`号源不足（追踪号 3f2a…）`）并提示"可在后端日志与审计中检索"，但 `/admin/audit-logs` **只认** `resource/action/from/to/user_id` —— 按追踪号查询在这套产品里**根本做不到** |
+| **根因** | `audit_logs` 上建了 `KEY idx_trace (trace_id)`，`AuditFilter` 里却没有 `TraceID` 字段，**该索引在 Go 代码中从未被引用过一次**（死 schema）。schema 与查询两侧都按"将来要查"设计过，只是中间那一段没接上 |
+| **修复** | 三层接上 `trace_id` 过滤（handler → service → repository），前端审计页加追踪号输入框并在每行加「筛选」动作。格式非法返回 **`40001`**，与 `user_id` 的静默忽略**刻意相反** —— 忽略会返回全部日志，管理员会误判影响面 |
+| **验证** | 服务层 5 例（含 5 种非法格式）、集成 6 例（含两条断言"恰好命中 1 条"的闭环用例）；`EXPLAIN` 实测走 `idx_trace`、`type=ref`、`rows=1` |
+| **顺带抓到一个恒真用例** | 「按追踪号查恰好命中 1 条」第一版**在删掉仓储层 `WHERE` 之后依然通过**：测试库每次运行从零建库，只发一个请求时未过滤的查询同样只返回 1 条。**是反向验证把它暴露出来的**，不是它自己在报错。修法是刻意造**两条**不同追踪号的记录，让"过滤没生效"必然多出一条 |
+
+#### H6 · 刷新页面必「页面不存在」（路由守卫的判断顺序）
+
+| | |
+|---|---|
+| **位置** | `frontend/src/router/index.ts` 的 `beforeEach` |
+| **症状** | 登录后能正常进管理看板，**一按 F5 就显示「页面不存在」**。三个角色、所有页面都一样 |
+| **根因** | 角色路由是登录后才注册的，所以刷新时目标地址**必然先被 `/:pathMatch(.*)*`（catchAll）匹配**。而 catchAll 带着 `public: true`，守卫里 `if (to.meta.public) return true` 排在 `installRoleRoutes()` **之前** → 直接放行 → 角色路由永远装不上 |
+| **顺带一处死代码** | 原本用来救这个场景的 `if (justInstalled && to.name === 'not-found') return to.fullPath`，因为上面的提前返回**永远走不到** |
+| **修复** | 顺序改为：已登录 → **先装角色路由** → 再判 public。另：未登录遇到 not-found 时**先去登录页**（登录前无法区分"地址不存在"与"需要登录"，直接 404 会给收藏了受保护地址的用户一个撒谎的结论） |
+| **验证** | `router.spec.ts` 22 例（三个角色各自的刷新/深链接 + 登出残留 + redirect 分支）；反向验证：把 public 判断挪回最前 → **15 条变红** |
+
+#### H7 · 路由"声明"与"注册"不一致（界面点了没反应）
+
+| | |
+|---|---|
+| **位置** | 同上，`ROUTES_BY_ROLE` 手写映射 |
+| **症状** | **医生工作台的「AI 报告」按钮点不动**；**管理员侧栏的「医生工作台」点不动**。不报错，就是没反应 |
+| **根因** | 注册哪些路由由**数组分组**决定，而每个路由自己声明的 `meta.roles` 是另一套。`preconsult-report` 声明 patient/doctor/admin 却只挂在 patient 组；`workbench` 声明 doctor/admin 却只挂在 doctor 组。未注册的 name 被 `router.push` 解析时以"无匹配"**中断导航**，静默失败 |
+| **修复** | `routesForRole(role)` 改为从 `meta.roles` **推导**注册集合，分组数组只用于阅读 |
+| **验证** | `router.spec.ts` 里一条**不变量**用例：凡 `meta.roles` 声明允许某角色访问的路由，该角色登录后必须 `hasRoute`。反向验证：改回按分组 → 不变用例**直接点名** `preconsult-report 声明 doctor 可访问，却没有为该角色注册` |
+
+#### M6 · 三角色共用视图调用患者专属接口
+
+| | |
+|---|---|
+| **位置** | `frontend/src/views/ReportView.vue`（`meta.roles` 是 patient/doctor/admin） |
+| **症状** | 医生/管理员打开预问诊报告页：**「重新获取」会打 `POST .../preconsult/submit`（仅患者）**、「去完成预问诊」/「返回对话」跳到未注册给他们的 `preconsult-chat`；另外 `listMine` 也是患者专属，白拿一个 403。页面看起来一切正常，点下去 403 或毫无反应 |
+| **根因** | 页面最初按患者写，后来被复用到三个角色，但**没有区分"谁能调哪个接口"** |
+| **修复** | 加 `isPatient` 判断：非患者不调 `listMine`/`submit`（「重新获取」退化为重新拉取），患者专属按钮按角色收起。`WorkbenchView` 的「书写病历」同理对管理员隐藏 |
+| **验证** | `ReportView.spec.ts` 11 例（逐角色断言"不该发的调用没发、不该有的按钮没有"）；反向验证：去掉角色判断 → **6 条变红** |
+| **为何长期未发现** | 三个角色的**页面都能正常渲染**，缺陷只在"点击之后的权限"上 —— 静态检查和"页面能打开"都看不出来。这与 H6/H7 是同一类：**没有报错、也没有崩溃，只是功能静默失效** |
 #### 环境事实（不是缺陷，但会持续坑人）
 
 - **PATH 上的 `bash` 是 WSL 启动器**（`C:\WINDOWS\system32\bash.exe`），
@@ -340,14 +399,14 @@ Error Trace 指向**断言** → 用例逻辑问题；指向**建数据** → �
 # 一次性验证项目健康度（约 2 分钟）
 nub run deps:up
 cd backend && go run ./cmd/genlocal && cd ..
-nub run backend:test                 # 251 用例
+nub run backend:test                 # 268 用例
 nub run backend:vet                  # 0
 $env:MEDICORE_MYSQL_PASSWORD='medicore123'
-nub run backend:test:integration     # 60 用例
+nub run backend:test:integration     # 67 用例
 nub run backend:vuln                 # No vulnerabilities found
 
 # 更深一层（各自几十秒到几分钟）
-nub run backend:fuzz                 # 11 个 fuzz 目标
+nub run backend:fuzz                 # 13 个 fuzz 目标
 nub run backend:race                 # 数据竞争（走 Docker）
 nub run backend:bench                # 纯内存基准
 nub run backend:bench:integration    # 真实 MySQL/Redis 基准

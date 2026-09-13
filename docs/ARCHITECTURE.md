@@ -137,7 +137,7 @@ type stockStore interface {
 
 **带来三个好处**：
 
-1. **可测试**：service 单测注入内存 fake，251 个用例秒级跑完，不需要 MySQL/Redis。
+1. **可测试**：service 单测注入内存 fake，整个单元测试集秒级跑完，不需要 MySQL/Redis。
 2. **耦合可见**：接口就是 service 到底用了哪些能力的清单。
 3. **接口保持最小**：`appointmentJanitor` 只声明 `ListExpiredPending` + `Expire`，
    定时任务不必实现 `appointmentStore` 的全部 7 个方法。
