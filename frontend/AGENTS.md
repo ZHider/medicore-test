@@ -1211,7 +1211,8 @@ nub --cwd frontend run test:watch  # 监听模式
 | 端点行为与错误码的实测记录 | `backend/test/integration/`（67 个用例，是行为的活文档） |
 | 某个模块为什么这么设计 | `docs/MODULES.md` 对应章节 |
 | 后端有哪些坑、怎么诊断 | `docs/PITFALLS.md`（先看 §0 的判据表） |
-| 项目整体状态与未完成项 | `docs/FIXES.md` §1、`docs/HANDOVER.md` §3 |
+| 项目整体状态与未完成项 | `docs/FIXES.md` §1（指标唯一台账）、§7（未完成与风险的唯一清单） |
+| 文档全集与阅读顺序 | `docs/README.md`（唯一入口） |
 | 后端开发历程与教训 | `docs/HANDOVER.md` §2 |
 | 项目级硬规则（对前端同样适用） | 仓库根 `AGENTS.md` §2 |
 

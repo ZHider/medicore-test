@@ -5,7 +5,9 @@
 >
 > 即使模块已完成，这些信息仍然重要——**它们回答"为什么是这样写的"，而这正是重构时最容易改错的地方。**
 
-最后更新：工程质量基建（CI / fuzz / benchmark / race）之后
+最后更新：一次全量文档一致性整理之后（指标口径统一）。
+
+> 文档全集与阅读顺序见 **`docs/README.md`**；指标数值的唯一台账见 `docs/FIXES.md` §1。
 
 > ⚠️ **端点清单以 `backend/internal/router/router.go` 或 gin 启动输出为准。**
 > 本文档曾把管理端点写成 `/api/v1/audit-logs`（少了 `/admin/` 段），照文档调接口会 404。
@@ -23,50 +25,48 @@
 
 ### 0.1 规模一览（按代码量排序）
 
+> 行数口径：**非空行**（`router` 190 行可核对）；文件数含 `_test.go` 之外的 `.go`。
+
 | 模块 | 文件 | 行数 | 职责 |
 |---|---|---|---|
-| `service` | 13 | 2435 | 业务编排、事务边界、**资源层归属校验** |
-| `repository` | 17 | 2284 | **唯一允许 GORM 的层**；SQL 与 Lua 都在这里 |
-| `handler` | 9 | 692 | 参数绑定/校验、统一响应 |
+| `service` | 13 | 2454 | 业务编排、事务边界、**资源层归属校验** |
+| `repository` | 17 | 2290 | **唯一允许 GORM 的层**；SQL 与 Lua 都在这里 |
+| `handler` | 9 | 695 | 参数绑定/校验、统一响应 |
 | `model` | 10 | 672 | PO / DTO / 枚举 + 分页与状态判定 |
-| `middleware` | 8 | 365 | TraceID / Recovery / RequestLog / Metrics / RateLimit / JWT / RBAC / Audit |
-| `audit` | 1 | 317 | 异步批量审计写入器 |
+| `middleware` | 8 | 369 | TraceID / Recovery / RequestLog / Metrics / RateLimit / JWT / RBAC / Audit |
+| `audit` | 1 | 322 | 异步批量审计写入器 |
 | `config` | 2 | 305 | 配置加载与启动前校验 |
 | `worker` | 1 | 270 | Redis Stream 消费者 |
 | `app` | 1 | 253 | 依赖装配（main 与集成测试共用） |
 | `llm` | 3 | 248 | LLM 抽象 + mock（故障注入） |
-| `router` | 1 | 190 | 路由分组与中间件挂载 |
+| `router` | 1 | 190 | 路由分组与中间件挂载（**29 条端点**） |
 | `scheduler` | 1 | 157 | cron 三项任务 |
-| 其余工具包（12 个） | 各 1–3 | 22–132 | `secret` `errcode` `mockhis` `jwt` `response` `his` `apperr` `mask` `authctx` `traceid` `metrics` `logger` |
+| `cmd`（4 个入口） | 4 | 740 | server / genlocal / seed / loadtest |
+| `prompts` | 1 | 82 | 版本化提示词（另有 3 个被 `go:embed` 嵌入的 md/json 资源） |
+| 其余工具包（12 个） | 14 | 22–146 | `secret` `errcode` `mockhis` `jwt` `response` `his` `apperr` `mask` `authctx` `traceid` `metrics` `logger` |
 
-合计 **86 文件 / 9730 行**（口径：`internal/` 81 + `cmd/` 4 + `prompts/prompts.go` 1；
-另有 `prompts/` 下 4 个被 `go:embed` 嵌入的 md/json 资源）。
-测试代码 42 文件 / 7553 行，**测试/生产 ≈ 0.78**。
+合计 **86 文件 / 9830 行**。
+测试代码 46 文件（其中集成 9）/ 8123 行，**测试/生产 ≈ 0.83**。
 
-### 0.2 完成状态（诚实的边界）
+### 0.2 交付完成度
 
-**后端功能完整**：29 条端点全部实现并通过实测，M1–M6 全部完成。
-
-但 spec §12.2 的**最终交付清单**里有几项属于"整个项目"而非"后端"，
-它们**尚未完成** —— 说"项目完成了"时需要区分开：
+**功能已完整。** spec §12.2 的验收项逐条如下：
 
 | spec §12.2 / 验收项 | 状态 | 说明 |
 |---|---|---|
-| `docs/benchmark/` 压测报告 | ✅ | 17 项基准 + 复现命令 |
-| `docs/sql-optimization.md` | ✅ | 25 条业务查询的 EXPLAIN / EXPLAIN ANALYZE 实测 + 3 组索引反向验证 |
 | 后端分层无越界 | ✅ | `go vet` / `staticcheck` / `deadcode` 三者均 0，已进 CI |
-| **G2** 高并发不超卖 + 高性能查询 | ✅ | `cmd/loadtest` 实测零超卖；分页实测 38× |
+| **G1** 三角色全流程闭环 | ✅ | 后端 29 端点 + 前端三角色页面全部实现；三条主线见 `ARCHITECTURE.md` §三点五 |
+| **G2** 高并发不超卖 + 高性能查询 | ✅ | `cmd/loadtest` 实测零超卖；分页 38×（口径见 `sql-optimization.md` §0） |
 | **G3** AI 结构化 + 优雅降级 + SSE | ✅ | Schema 自检、降级路径、SSE 均已实测 |
 | **G4** 可观测性 + 基础合规 | ✅ | TraceID 贯通、指标齐全、加密存储 + 接口脱敏 |
-| **G1** 三角色全流程闭环 | ⚠️ | 后端接口 100% 就绪；**前端页面未开发** → 患者无法真正走完 |
-| `golangci-lint` 零 error | ✅ | 仓库根 `.golangci.yml`（v2 格式）；本机实测 v2.13.2 **0 issues**；`nub run backend:lint` 一键；已进 CI |
-| **G5** `docker compose up -d --build` 一键起全栈 | ❌ | 只有 `deploy/compose.dev.yml`（依赖服务）；无前后端镜像、无根 compose |
-| **G6** `docs/ai-vibe-coding/` 留痕 | ✅ | **后端部分完成**：WORKFLOW + prompts 指针 + **6 篇**逐模块 review（M1–M6）。**事后整理**，来源逐条标注；前端无页面故无前端 review |
-| 3–5 分钟演示录屏 | ❌ | 前端页面未开发，无从录起 |
+| **G5** `docker compose up -d --build` 一键起全栈 | ✅ | `nub run stack:init` → `stack:up` → `stack:seed`；四容器全 healthy。见 `deploy/README.md` |
+| **G6** `docs/ai-vibe-coding/` 留痕 | ⚠️ | WORKFLOW + prompts 指针 + **6 篇**逐模块 review（M1–M6）。**前端 review 仍缺** |
+| `docs/benchmark/` 压测报告 | ✅ | 见 `docs/benchmark/`（含复现命令、环境与"不测什么"） |
+| `docs/sql-optimization.md` | ✅ | 25 条业务查询的 EXPLAIN / EXPLAIN ANALYZE + 3 组索引反向验证 |
+| `golangci-lint` 零 error | ✅ | 仓库根 `.golangci.yml`（v2 格式）；实测 v2.13.2 **0 issues**；入口 `nub run backend:lint` |
 
-> **一句话**：**后端可视为完成**；项目整体还差 **前端页面开发** 与 **两项交付物**
-> （全栈 compose、演示录屏）。
-> 完整待办见 `HANDOVER.md` §3，风险与未决项见 `FIXES.md` §7。
+> **"还剩什么没做"的唯一清单是 `docs/FIXES.md` §7；指标数值的唯一台账是 `docs/FIXES.md` §1。**
+> 本文档不复述，避免第二份会漂移的副本。
 
 ### 0.3 模块全景与依赖顺序
 
@@ -101,7 +101,7 @@ M6 医疗与同步 ── record / sync / audit（含医生工作台补全）
 | 加列表接口 | §3 M3（游标分页） |
 | 排查"数据不一致" | §4 M4（对账）+ §5 M5 |
 | 改医生接诊列表 / 报告归属校验 | §6.7 M6 |
-| **写代码前避险 / 出问题定位** | `docs/PITFALLS.md`（四张判据表） |
+| **写代码前避险 / 出问题定位** | `docs/PITFALLS.md`（五张判据表） |
 | **验收某个角色能不能用** | **§6.7 的教训：按角色横切，别按模块打勾** |
 
 **通用前提**：所有模块都遵守 `AGENTS.md` §2 的硬性规则。本文档只记录**模块特有**的内容。
@@ -325,6 +325,9 @@ type CursorPage[T any] struct {
 | `WHERE id < ? ORDER BY id DESC LIMIT 20` | **0.483 ms** | **20 行** |
 
 **相差约 284 倍**，且游标分页代价与页码无关。
+（⚠️ 引用这个倍数时必须带口径：这里是 **23 万行 + EXPLAIN ANALYZE + 游标直连**。
+经 GORM 的端到端基准是 **38×**，客户端直连热态约 **4300×** —— 三份口径不同、数字不可互换，
+见 `docs/sql-optimization.md` §0 的对照表。）
 
 ### 3.3 缓存设计
 
@@ -932,11 +935,11 @@ doctor  → appt.doctor_id 必须等于本人 doctors.id（不是 users.id！）
 缺了 doctor 分支，任何医生改一下 URL 里的 ID 就能读到全院患者的病情描述 ——
 这是本轮补全里**唯一有真实隐私后果**的一处。
 
-**新增测试**（都做过"改坏实现它会红吗"的自检）：
+**覆盖这一改动的测试**（都做过"改坏实现它会红吗"的自检）：
 
-- **单元 +18**：`appointment_doctor_test.go`（角色分流、筛选白名单、无医生档案）、
+- 单元：`appointment_doctor_test.go`（角色分流、筛选白名单、无医生档案）、
   `preconsult_access_test.go`（管理员直通、患者本人/他人、接诊/非接诊医生、无档案）
-- **集成 +11**：`test/integration/doctor_test.go` —— 含**非接诊医生拿到 40302**，
+- 集成：`test/integration/doctor_test.go` —— 含**非接诊医生拿到 40302**，
   且其接诊列表中看不到该患者的预约（两个端点交叉验证，避免只修一个漏一个）
 
 ---
@@ -979,7 +982,7 @@ M6 医疗与同步（record / sync / audit）+ 医生工作台补全（见 §6.7
 |---|---|
 | **M1** | 中间件链顺序固定；JWT/RBAC 按路由挂载（探针要免认证）；错误码三张表要同步改 |
 | **M2** | refresh_token 必须可撤销所以用 Redis 不用 JWT；防枚举要同时防文案与**时间** |
-| **M3** | 禁止 OFFSET（284 倍差距）；手写 JOIN 必须带软删除条件；缓存回源要脱离调用方取消 |
+| **M3** | 禁止 OFFSET（倍数与口径见 §3.2）；手写 JOIN 必须带软删除条件；缓存回源要脱离调用方取消 |
 | **M4** | 预热用 `SETNX`；键不存在返回 -1 不是 0；幂等键比对删除；对账用 CompareAndSet |
 | **M5** | 流式用回调不用 channel；降级是正常路径不是异常；`{}` 是合法 Schema 所以要自检 |
 | **M6** | 审计异步但有丢失窗口；HIS 同步分三阶段；排班 `remaining` 不被重置；**模块打勾 ≠ 角色无缺口，收尾要按角色横切复查**；**业务包不得依赖 mock 包** |

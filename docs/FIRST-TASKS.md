@@ -14,7 +14,7 @@
 | 规矩 | 为什么 |
 |---|---|
 | **① 加任何依赖之前先问** | 加依赖这个动作**会出网**，走机主**计费**的代理；而且容器里拉不到新依赖。规范问法：「要什么 + 为什么现有依赖做不到」 |
-| **② 不要为了前端方便去改后端契约** | 后端契约被 60+ 个集成测试和 250+ 个单元测试守着。真有需要，先确认，那会是一轮独立改动 |
+| **② 不要为了前端方便去改后端契约** | 后端契约被 67 个集成测试和 268 个单元测试守着。真有需要，先确认，那会是一轮独立改动 |
 | **③ 改完必须跑门槛** | `nub run lint`（静态检查）和 `nub run test`（测试）。**两个都要绿** |
 
 **另外两个"专业习惯"**，从第一个任务就请养成：
@@ -145,19 +145,23 @@ export function relativeTime(value: string, now: Date = new Date()): string
 
 ### 要做什么
 
-给**一个目前没有测试的 service 方法**补测试。自己挑一个：
+给**一个目前测试覆盖薄弱**的 service 方法补测试。先自己找出候选：
 
 ```powershell
-# 找找哪些 service 方法还没有对应测试
+# 方式一：看哪些 service 文件还没有同名的 _test.go
 cd backend
-nub --cwd .. run backend:test
-# 或者直接看文件对照：
 Get-ChildItem internal/service -Filter '*.go' | Where-Object { $_.Name -notmatch '_test' } | Select-Object Name
 Get-ChildItem internal/service -Filter '*_test.go' | Select-Object Name
+
+# 方式二（更靠谱）：从覆盖率里挑函数，而不是从文件列表挑
+go test ./internal/service/... -coverprofile=$env:TEMP\svc.out
+go tool cover -func=$env:TEMP\svc.out | Select-String -NotMatch '100.0%'
 ```
 
-> **建议**：挑一个**有分支逻辑**的方法（有 if/else、有错误返回的），
-> 别挑"就是转调一下 repository"的那种 —— 那种测不出东西。
+> **建议**：挑一个 `0.0%` 且**有分支逻辑**的方法（有 if/else、有错误返回的）。
+> 注意：`internal/service/` 下大部分文件**已经有测试**了，
+> 所以方式二（按覆盖率挑函数）通常比方式一（按文件配没有测试）更能找到目标；
+> `deps.go` 只是接口声明、`health.go` 几乎没有分支，都不适合。**自己找一个真正值得测的。**
 
 ### ✅ 验收标准
 

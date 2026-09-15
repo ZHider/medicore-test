@@ -1,40 +1,23 @@
 # MediCore 开发历程与交接记录
 
-> 本文档记录**做过什么、错过什么、还剩什么**。
+> 本文档记录**做过什么、错过什么**。
 > 与 `ARCHITECTURE.md`（讲"系统长什么样"）、`MODULES.md`（讲"每个模块怎么写的"）互补：
 > 这份讲"它是怎么变成现在这样的"。
-> 最后更新：工程质量基建（CI / fuzz / benchmark / race）之后
+> 最后更新：一次全量文档一致性整理之后。
 
 ---
 
 ## 文档地图
 
-接手这个项目时，建议按以下顺序阅读：
-
-| 顺序 | 文档 | 回答什么问题 |
-|---|---|---|
-| 1 | `AGENTS.md` | 规则、命令、陷阱速查 —— **先读这个** |
-| 2 | 本文档 | 做过什么、错过什么、还剩什么 |
-| 3 | `docs/ARCHITECTURE.md` | 系统整体怎么运转 |
-| 4 | `docs/MODULES.md` | **每个模块的结构与决策**（改代码前必查） |
-| 5 | `docs/PITFALLS.md` | **易错点总索引 + 诊断判据**（写代码/写测试前扫一眼） |
-| 6 | `docs/FIXES.md` | **当前健康指标 + 缺陷与改进总账**（要汇报或评估现状时看这份） |
-| 7 | `docs/CODE-REVIEW.md` | 两次审视的质量快照与已知短板 |
-| 8 | `docs/benchmark/` | 性能基准结果与复现命令 |
-| 9 | `docs/sql-optimization.md` | **SQL 与索引实测**：25 条查询的 EXPLAIN/EXPLAIN ANALYZE + 索引反向验证 |
-| 10 | `spec.md` | 原始需求（注意：它有 4 处缺陷已被修正） |
-
-**按目的查**：
+> **完整的文档索引与阅读顺序已集中到 `docs/README.md`（唯一入口）**，
+> 本文档不再维护第二份（曾经因为复述而出过漂移）。这里只保留本文档自己的定位：
 
 | 我要… | 去看 |
 |---|---|
-| 评估项目现在健不健康、要往上汇报 | `docs/FIXES.md` §1 指标表 + §7 风险 |
-| 写代码/写测试前避险 | `docs/PITFALLS.md`（先看 §0 的四张判据表） |
 | 知道某个缺陷当时是怎么发生的 | 本文档 §2（按时间线的原始记录） |
-| 改某个模块 | `docs/MODULES.md` 对应章节 |
-| 看性能数字与怎么复现 | `docs/benchmark/README.md` |
-| 看某条 SQL 走了哪个索引、索引该不该删 | `docs/sql-optimization.md` |
-| 看还剩什么没做 | 本文档 §3 |
+| 看**刻意偏离 spec 的 6 处**（唯一事实来源） | 本文档 §4 |
+| 看项目现在健不健康、还剩什么 | `docs/FIXES.md` §1 指标 + §7 风险与未决项 |
+| 大致了解"它是怎么变成现在这样的" | 本文档 §1.1 的提交时间线 |
 
 ---
 
@@ -59,14 +42,18 @@
 | **M6+** | `e3072ab` | **医生工作台补全**：接诊列表 + 预问诊报告对医生开放（spec §2.1 的两处角色缺口） |
 | **审视²** | `6b23e57` | **全量代码审视**：修 1 个 HIGH 级恢复路径缺陷、1 处队列越权、1 处 API 契约倒置；清空死代码与无用泛化；`staticcheck`/`deadcode` 归零 |
 | **补测** | `dddd194` | **针对关键路径补测**（见 §2.8）：直测 repository 层的 Lua/SQL 不变量、限流与令牌撤销、纯逻辑判定；并修掉一个 40% 概率失败的 flaky 用例 |
-| **基建** | `ecaa04c` | **CI / fuzz / benchmark / race**（见 §2.9）：六道 CI 关卡；11 个 fuzz 目标（**找出 2 个真实缺陷**）；`docs/benchmark/` 成型；Docker 里跑通 `-race`；并修掉一个夹具生成器引起的 flaky |
+| **基建** | `ecaa04c` | **CI / fuzz / benchmark / race**（见 §2.9）：六道 CI 关卡；fuzz 目标扩到 13 个（**找出 2 个真实缺陷**）；`docs/benchmark/` 成型；Docker 里跑通 `-race`；并修掉一个夹具生成器引起的 flaky |
 | **收官** | `2a0595f` | **文档固化**：新增 `docs/FIXES.md`（缺陷与改进总账 + 健康指标）与 `docs/PITFALLS.md`（易错点总索引 + 诊断判据）；全量同步各文档指标 |
 | **收尾①** | `edffa4e` | **后端交付物补齐**：`docs/sql-optimization.md`（25 条查询的 EXPLAIN/EXPLAIN ANALYZE 实测 + 3 组 `IGNORE INDEX` 反向验证）；`.golangci.yml`（v2 格式，**实测 0 issues**）+ `nub run backend:lint` + 进 CI；顺带修掉 11 条 ST* 文档缺口；三角色横切复查补齐（患者/管理员**无新缺口**） |
-| **本轮** | 本次提交 | **release gate 抓到一个静默缺陷**（见 §2.10）：`race.sh` 曾在 `nub run` 路径下"返回成功、但什么都没跑"。修路径分支 + 内容预检 + 输出兜底三处，并跑通 `-race` 与 fuzz 全目标 |
+| **收尾②** | `df189bd`、`91a29e3`、`ab67a60` | **前端 / 编排 / 新人文档**：三角色页面 + `deploy/compose.yml` 全栈编排；`docs/ONBOARDING.md`、`docs/PRINCIPLES.md`、`docs/FIRST-TASKS.md` |
+| **本次** | 见 `git log` | **文档一致性整理**：指标口径统一到实测值；删除三份中间态文档（`CODE-REVIEW.md` / `contract-sync.md` / `FEASIBILITY.md`）；新增 `docs/README.md` 作为唯一索引 |
+
+> 时间线停在本文档**最后一次内容更新**处。之后的提交看 `git log`，不要指望这里逐条追加 ——
+> 那正是"中间态文档"最容易腐烂的地方。
 
 ### 1.2 关键交付物
 
-**后端**（86 文件 / 9730 行生产代码）：
+**后端**（86 文件 / 9830 行生产代码，非空行）：
 
 | 模块 | 能力 |
 |---|---|
@@ -80,54 +67,38 @@
 | 审计 | 异步批量写入审计日志，含资源/动作推导 |
 | 运维 | 健康探针、Prometheus 指标（HTTP / 抢号 / 对账 / LLM / 队列 / 审计） |
 
-**测试**：42 文件 / 7553 行（其中集成 8 文件 / 2240 行），**311 个用例全部通过**
+**测试**：46 文件（其中集成 9）/ 8123 行
 
 | 类型 | 数量 | 运行方式 |
 |---|---|---|
-| 单元测试 | 240 | `nub run backend:test`（无需外部依赖） |
-| 集成测试 | 60 | `nub run backend:test:integration`（需 mysql + redis） |
+| 单元测试 | 268 | `nub run backend:test`（无需外部依赖） |
+| 集成测试 | 67 | `nub run backend:test:integration`（需 mysql + redis） |
+| 前端 vitest | 202（12 文件） | `nub run frontend:test` |
 
-**覆盖率**：整体 **34.2%**（`service` 79.6%、`audit` 96.1%、`mockhis` 92.3%、
+**覆盖率**：整体 **34.9%**（`service` 79.7%、`audit` 96.1%、`mockhis` 92.3%、
 `worker` 90.4%、`jwt` 91.7%、`llm` 89.5%、`prompts` 88.2%、`secret` 87.8%、`mask` 100%、
 `model` 55.8%）
 
-> ⚠️ **`repository` 那 6.4% 是按包统计的假象**：集成测试是独立包，
+> ⚠️ **`repository` 那 6.3% 是按包统计的假象**：集成测试是独立包，
 > `go test ./...` 的 profile 不合并它的执行。用 `-coverpkg` 单独统计集成测试，
-> **`repository` 实际覆盖 67.5%**、`service` 62.4%、`handler` 76.6%。
+> **`repository` 实际覆盖 67.5%**、`service` 62.4%、`handler` 77.1%。
 > 报告覆盖率时要说清楚用的是哪种口径，否则会得出"数据访问层几乎没测"的错误结论。
 
 **静态检查**：`go vet` 0、`staticcheck` 0、`deadcode` 0
 **数据竞争**：`-race` 全量通过（本机无 C 编译器，走 `backend/scripts/race.sh` 的 Docker 方案，见 §2.9-D）
-**Fuzz**：11 个目标；**Benchmark**：17 项
-
-**文档**：
-
-| 文档 | 回答什么问题 |
-|---|---|
-| `spec.md` | 原始需求（SSOT；4 处缺陷已修正） |
-| `FEASIBILITY.md` | 可行性实测结论 |
-| `AGENTS.md` | 规则、命令、陷阱速查 —— 新 agent 先读这份 |
-| `docs/ARCHITECTURE.md` | 系统整体怎么运转 |
-| `docs/MODULES.md` | 逐模块的结构与决策（改代码前必查） |
-| `docs/PITFALLS.md` | **易错点总索引 + 诊断判据** |
-| `docs/FIXES.md` | **缺陷与改进总账 + 当前健康指标** |
-| `docs/HANDOVER.md` | 本文档：历程、错误记录、未完成工作 |
-| `docs/CODE-REVIEW.md` | 两次审视的质量快照 |
-| `docs/schema.sql` | 完整 DDL（11 张表，集成测试每次执行它） |
-| `docs/database-review.md` | 数据库设计评审与验证证据 |
-| `docs/benchmark/` | 性能基准结果与复现命令 |
-| `docs/sql-optimization.md` | SQL 与索引实测（EXPLAIN + 反向验证） |
-| `.golangci.yml` | lint 配置（v2 格式）；入口 `nub run backend:lint` |
-| `backend/README.md` | 后端使用说明 |
+**Fuzz**：13 个目标
 
 **工具命令**：`cmd/genlocal`（密钥生成）、`cmd/seed`（演示数据）、`cmd/loadtest`（并发压测）
+
+> **指标的唯一台账在 `docs/FIXES.md` §1（含口径与复现命令）。**
+> 本节只是本文档写作时的快照，两处不一致时以那一份为准。
 
 ### 1.3 关键实测结论（都是跑出来的，不是查文档）
 
 | 结论 | 数据 |
 |---|---|
 | TypeScript 7 当前不可用 | 包内 `typescript.js` 数量为 **0**；`vue-tsc` 崩溃、`typescript-eslint` 抛错 |
-| 游标分页 vs OFFSET | 23 万行：**0.483ms vs 137ms**（约 284 倍） |
+| 游标分页 vs OFFSET | 23 万行 EXPLAIN ANALYZE：**0.483ms vs 137ms**（约 284 倍）。⚠️ 引用倍数要带口径 —— 经 GORM 的端到端基准是 38×，见 `sql-optimization.md` §0 |
 | 抢号零超卖 | 200 患者抢 20 号源，恰好 20 成功、180 号源不足、耗时 172ms |
 | 依赖漏洞 | `govulncheck` 发现 **6 个**，修复 5 个 |
 | 缓存修复有效性 | 反向验证：改回旧实现后 2 个测试失败（比值 0.00） |
@@ -397,8 +368,11 @@ service 层**完全没有归属校验** —— 任何医生换个排班 ID 就�
 #### G. 一个值得记的环境结论
 
 `go test -race` 在本机**跑不了**：`-race` 需要 cgo，而 PATH 里没有 C 编译器
-（`gcc not found`）。这是实测结论，不是猜测。涉及并发的改动目前只能靠
-代码审查 + 单测的可重复性来保障。
+（`gcc not found`）。这是实测结论，不是猜测。
+
+> **后续已解决**：见 §2.9-D 与 §2.10 —— 用 `backend/scripts/race.sh` 在 Docker 里跑，
+> 实测全量 `./internal/...` 无数据竞争（约 36 秒、24 个包结果行）。
+> 这一条保留下来是因为它记录了"当时只能靠代码审查"的那个阶段。
 
 ### 2.8 针对关键路径的补测
 
@@ -428,7 +402,7 @@ service 层**完全没有归属校验** —— 任何医生换个排班 ID 就�
 #### 三层测试的分工在这一轮被明确
 
 ```
-service 单测    →  编排逻辑（注入内存 fake，快，251 个用例秒级跑完）
+service 单测    →  编排逻辑（注入内存 fake，快，268 个用例秒级跑完）
 repository 直测 →  真实 SQL / Lua 的语义（本轮新增，慢但只压在关键不变量上）
 HTTP 集成测试   →  端到端行为、路由、中间件、状态码
 ```
@@ -502,7 +476,7 @@ MySQL 的 `--health-cmd` 用的是**真实查询**而不是 `mysqladmin ping`：
 `docker-entrypoint` 初始化时会先起一个临时 server，此时 ping 已经返回成功 ——
 这个坑本地开发时踩过（`AGENTS.md` §5.1），CI 里同样会踩，所以直接按正确做法写。
 
-#### B. Fuzz：11 个目标，**找出 2 个真实缺陷**
+#### B. Fuzz：13 个目标，**找出 2 个真实缺陷**
 
 对象是**解析不可信输入**的函数 —— 一个 panic 在 HTTP handler 里是 500，
 在后台任务（worker / cron）里就是整个进程没了。
@@ -681,56 +655,12 @@ fmt.Sprintf("IT%d", time.Now().UnixNano()%100000)   // 只有 10 万种取值
 
 ---
 
-## 三、还没做的工作
-
-### 3.1 高优先级
-
-| 项 | 现状 | spec 依据 |
-|---|---|---|
-| ~~前端页面~~ | ✅ **已完成**（2026-09-13）：三角色全部页面 + axios 封装（双令牌刷新去重）+ 按角色动态路由 + ECharts 看板。`typecheck`/`lint`/`build` 零错误零告警，并对真实后端跑通了三角色闭环。详见 `frontend/AGENTS.md` §0.1 / §7 | §8 |
-| ~~全栈 compose 编排~~ | ✅ **已完成**（2026-09-13）：`deploy/compose.yml` + `backend/Dockerfile` + `frontend/Dockerfile` + `deploy/nginx/`。`stack:init` → `stack:up` → `stack:seed` 三步起全栈；实测四容器全部 healthy、SSE 经 nginx 未被缓冲。详见 `deploy/README.md` | §11.2、G5「一键起全栈」 |
-
-> **两项高优先级已完成**，当前没有阻塞性未完成项。剩下的都是"验证类"工作，见 §3.2。
-
-### 3.2 中优先级
-
-| 项 | 说明 |
-|---|---|
-| **浏览器人工验收** | 前端与编排的**全部结论都来自 HTTP 层 + 静态检查，没有在浏览器里打开过**。页面渲染、移动端布局、ECharts 绘制需要人工走一遍（清单见 `frontend/AGENTS.md` §7.1） |
-| 前端三处未走到的分支 | `fallback=true` 降级分支（mock LLM 恒返回 `fallback=false`）、`/readyz` 的 503 分支、`40002` 号源不足 —— 代码照契约写了，但**没有被真实数据走到过** |
-| 编排的异常路径 | 未测过"依赖挂掉"：`docker compose -f deploy/compose.yml stop mysql` 后 `readyz` 是否转 503、backend 是否变 unhealthy |
-| **软件供应链**：`golangci-lint` 未纳入 `go.mod` 工具依赖 | 已装本机 v2.13.2 并进 CI（`go install ...@v2.13.2`），但**版本号写在 `ci.yml` 里而不是 `go.mod` 的 `tool` 指令**。将来 Go 的 tool directive 或 `mise`/`aqua` 能统一管理时应收敛 |
-| `docs/sql-optimization.md` §4.4 的 cron 扫描 | 当前读 4000 行拿 200 条（1.48 ms）**可接受**，故未改。**触发条件已写明**：pending 占比降到 1% 以下时应把 `ORDER BY id` 改为 `ORDER BY expire_at`，让 `idx_status_expire` 变成 range 扫描 |
-
-> **已完成（本轮移出）**：
-> - **前端页面**（spec §8）—— 见 §3.1；前端管理看板已拉 `/metrics` 做 ECharts 健康度。
-> - **全栈 compose 编排**（spec §11.2）—— 见 §3.1。
-> - `docs/sql-optimization.md` —— 25 条业务查询的 EXPLAIN/EXPLAIN ANALYZE + 3 组索引反向验证。
-> - `golangci-lint` 配置 —— `.golangci.yml`（v2）+ `nub run backend:lint` + CI 关卡，实测 0 issues。
-> - **按角色横切复查** —— 三角色已全部查完；患者/管理员结论为无新缺口（医生角色此前修了 2 处）。
-> - **`docs/ai-vibe-coding/`（G6）** —— WORKFLOW + prompts 指针 + **6 篇**逐模块 review（M1–M6）。
->   **性质是事后整理**，来源逐条标注；前端页面已完成但仍缺前端 review。
-
-### 3.3 低优先级 / 可选
-
-| 项 | 说明 |
-|---|---|
-| `repository` 层覆盖率 | 按包统计 6.4%（假象），集成口径 67.5%。仍为 0% 的主要是缓存命中路径与目录只读查询 |
-| `handler` 单元覆盖率 | 0%，但集成测试已覆盖全部 29 个端点的行为 |
-| `config` 覆盖率 33.7% | 密钥校验已覆盖，配置加载分支未覆盖 |
-| **软删除后的"复活"逻辑未实现** | `database-review.md` §4.2 曾把"由 service 复活 `deleted_at = NULL`"写成已完成，实际上代码里没有任何 `Unscoped()`/`deleted_at = NULL` 调用。当前没有任何入口会软删这些表，所以**缺口不可达**；但**加管理端删除功能之前必须先实现复活**，否则 HIS 同步会永久失败（详见该节说明） |
-| `audit_logs` 分区/归档 | 写入最频繁的表，长期运行需要 TTL 或分区 |
-| 真实 LLM 接入 | `llm.NewClient` 对 `openai`/`dashscope`/`deepseek` **明确返回错误**（刻意设计，见 §4.3） |
-| 上游 typescript-eslint 支持 TS7 后升级前端 | 目前锁定 TS 5.9.3 |
-
----
-
 ## 四、刻意偏离 spec 的地方
 
 **共 6 处，均有代码注释与文档说明。请勿当作疏漏"修正"回去。**
 
-> **本表是唯一事实来源。** 其他文档（`AGENTS.md` §7、`CODE-REVIEW.md` §6.2、
-> `MODULES.md`）只做指向，不再复述条目 —— 曾经因为复述而漏掉了一处：
+> **本表是唯一事实来源。** 其他文档（`AGENTS.md` §7、`docs/MODULES.md` 等）
+> 只做指向，不再复述条目 —— 曾经因为复述而漏掉了一处：
 > "用 `nub run` 替代 Makefile" 在 `package.json` 描述与 `AGENTS.md` §2.7 都写了，
 > 却没进这张表，于是各处一直写着"共 3 处"。**复述即漂移，只留一处。**
 
@@ -745,125 +675,3 @@ fmt.Sprintf("IT%d", time.Now().UnixNano()%100000)   // 只有 10 万种取值
 
 ---
 
-## 五、这个项目的"性格"（给接手者）
-
-### 5.1 实测优先于文档推断
-
-所有关键结论都是**跑出来的**：
-TypeScript 7 不可用（拆包验证包内无 `typescript.js`）、
-284 倍分页差距（23 万行 EXPLAIN ANALYZE）、
-6 个依赖漏洞（`govulncheck`）、
-缓存修复有效性（反向改坏看测试是否失败）。
-
-**遇到不确定的事，先写最小验证再下结论。** 我在 TS7 问题上曾因 nub 的 peer 粘性
-得出过**错误结论**（以为 TS7 能用），是重新干净安装后才推翻的。
-
-### 5.2 测试必须能失败
-
-写好关键测试后，**故意把实现改坏，确认测试真的会失败**。
-做过的反向验证：
-
-| 测试 | 改坏后 |
-|---|---|
-| `TestLogin_UnknownUserTimingIsEqualized` | 比值降到 0.00 → 失败 ✅ |
-| `TestCacheLoad_LoaderContextSurvivesCallerCancellation` | `context canceled` → 失败 ✅ |
-| `TestLoop_RecreatesMissingConsumerGroup` | 重建改用已取消的 ctx → "ctx 不应已失效" 断言失败 ✅ |
-| `TestQueue_OtherDoctorsScheduleIsForbidden` | 移除归属校验 → 越权者拿到了队列内容 ✅ |
-
-**没有反向验证过的测试，不能算测试。**
-反过来也要小心：**看起来在断言、实则恒为真的测试更危险**——它给人已经覆盖的错觉。
-本项目已发现三处（见 §2.7-C），都是"断言夹具静态字段而非行为"导致的。
-
-### 5.3 注释解释"为什么"
-
-项目里那些看起来"多此一举"的代码，都是在防具体的坑：
-
-| 代码 | 防的是 |
-|---|---|
-| 预热用 `SETNX` 而非 `SET` | 覆盖已扣减的号源 → 超卖 |
-| 幂等键比对删除而非 `DEL` | 误删已完成记录 → 幂等失效 |
-| `startStream()` 延迟到首次吐数据 | 先发 200 再报错 |
-| 对账用 `CompareAndSet` | 对账本身制造超卖 |
-| 缓存回源 `WithoutCancel` | leader 取消波及健康跟随者 |
-| 号源钳位用 `SET ... KEEPTTL` | 裸 `SET` 清掉 TTL，号源键变永久键 |
-| 消费者组重建用独立 ctx | 复用已取消的 ctx → 恢复路径永不成功 |
-| `audit.truncate` 回退到字符边界 | 切出非法 UTF-8 → 整批审计插入失败 |
-| 登录失败也执行假比对 | 响应时间枚举账号 |
-
-### 5.4 我（AI）的错误模式
-
-**核心问题不是设计能力，而是收尾动作。**
-
-- 设计判断（回调式流式、比对删除、预热语义）经反向验证都站得住
-- 但"写完立刻编译"这一步经常被跳过，导致 §2.1 的 A/B/G 类错误反复出现
-
-**给接手 agent 的建议**：如果你也是 AI，
-**每写完一个文件就跑一次 `go build ./...`**，别攒一批再编译。
-本项目 8 个自我引入的错误里，5 个会在这一步被立刻发现。
-
-### 5.5 第二类错误模式：写"看起来在断言"的测试
-
-§5.4 讲的是收尾动作被跳过。全量审视（§2.7）暴露了**另一类**独立的问题：
-测试写出来了、也跑了、也是绿的，但它其实什么都没验证。
-
-三种具体形态：
-
-| 形态 | 例子 |
-|---|---|
-| 断言夹具的静态字段 | `assert.Zero(t, fake.err == nil && fake.id == 0)` —— fake 不因被调用而变，恒为真 |
-| fake 忽略参数 | `EnsureGroup(context.Context)` 直接忽略 ctx，于是"用已取消的 ctx 调用"这个 bug 测不出来 |
-| 把错误行为写进期望值 | 断言 `/admin/*` 的审计 resource 是 `admin`，等于把 bug 固化 |
-
-**防法**：写"分支不该被走到"的断言时，数**调用次数**；写 fake 时，
-把实现会透传给下游的参数至少检查一次；拿到一个"看起来对"的期望值时，
-回到代码确认它是不是真的对。
-
----
-
-## 六、快速验证项目健康度
-
-```powershell
-# 一次性确认全部正常
-cd D:\Hider\Code\MediCore
-nub run deps:up
-$env:MEDICORE_MYSQL_PASSWORD='medicore123'
-nub run backend:vet                    # 应为 0
-nub run backend:lint                   # golangci-lint，应为 0 issues
-nub run backend:test                   # 251 个用例通过
-nub run backend:test:integration       # 60 个用例通过
-nub run backend:vuln                   # No vulnerabilities found
-nub run backend:bench                  # 纯内存基准
-
-# ⚠️ 下面两条**必须走 Git Bash**，不能用 PATH 上那个 bash（那是 WSL 启动器，见 §2.10）
-$bash = "C:\Program Files\Git\bin\bash.exe"
-& $bash backend/scripts/fuzz.sh 30s    # 11 个 fuzz 目标，各 30s
-& $bash backend/scripts/race.sh        # 数据竞争检测，应约 36s、24 个包结果行
-```
-
-**当前预期结果**：全部通过，漏洞 0（可达 0，另有 1 项上游无修复且未调用），
-集成测试 60/60，单元测试 240/240，lint 0 issues，`-race` 未检出竞争，fuzz 全目标通过。
-
-> **`race.sh` 的判据不要只看退出码**：它曾经静默"通过"（1 秒、退出 0、零输出）。
-> 现在脚本自带输出兜底会把它变成 exit 1，但**正规判据是"约 36 秒 + 24 个包结果行"** ——
-> 秒回就是没跑，别采信。详见 §2.10。
-
-深一层的静态检查：
-
-```powershell
-cd backend
-go install honnef.co/go/tools/cmd/staticcheck@latest      # 见下方版本说明
-go install golang.org/x/tools/cmd/deadcode@latest
-go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
-
-& "$env:GOPATH\bin\staticcheck.exe" ./...      # 应为 0
-& "$env:GOPATH\bin\deadcode.exe" -test ./...   # 应为 0
-golangci-lint run ./...                        # 应为 0 issues（配置在仓库根 .golangci.yml）
-```
-
-> **`go install` 会出网**，而本机 `HTTP(S)_PROXY` 指向机主的**计费**代理 ——
-> 装之前先确认（见 `AGENTS.md` §2.8）。本项目已装：`staticcheck` / `deadcode` /
-> `govulncheck` / `golangci-lint v2.13.2`，都在 `%GOPATH%\bin`。
-
-**索引与 SQL 的复现**（`docs/sql-optimization.md`）：它灌的是一次性数据集，
-复现要重建 `medicore_test` 并跑播种脚本，具体三条命令见该文档 §1
-（本机实测播种 25 秒；跑一次集成测试就会清掉这份数据）。

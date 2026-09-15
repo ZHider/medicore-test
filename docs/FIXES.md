@@ -4,65 +4,60 @@
 >
 > 面向**观测与向上汇报**。想找"哪些地方容易写错"，看 `docs/PITFALLS.md`。
 > 想找"当时是怎么发生的"，看 `docs/HANDOVER.md`（按时间线的原始记录）。
+> 文档全集与阅读顺序：**`docs/README.md`**。
 
 ---
 
 ## 一、当前健康指标（一眼看）
 
-*最后更新：工程质量基建完成之后。**所有数字都是本机实测**，复现命令见各节。*
+> **这一节是整个文档集的唯一指标台账。** `AGENTS.md` §0 与 `docs/README.md` §4 只放摘要，
+> 并指回这里 —— **改了测试或基准，只更新这一节**。
+
+*所有数字都是本机实测，口径与复现命令见 §8。*
 
 | 维度 | 数值 | 判定 |
 |---|---|---|
-| 端点 | 29 条 | spec §2.1/§8 的接口已全部就绪 |
-| 生产代码 | 86 文件 / 9730 行 | — |
-| 测试代码 | 42 文件 / 7553 行 | 测试/生产 ≈ 0.78 |
-| 单元用例 | **251**（240 常规 + 11 个 fuzz 目标） | 全绿 |
-| 集成用例 | **60** | 全绿，**连跑 6 次稳定** |
-| 整体覆盖率 | **34.2%** | 见下方口径说明 |
-| `service` 覆盖率 | **79.6%** | spec §11.1 要求的就是 service 核心逻辑 |
-| **`repository` 覆盖率** | 包口径 6.4% / **集成口径 67.5%** | 后者才是真实的 |
+| 端点 | **29 条** | 见 `backend/internal/router/router.go`（权威来源） |
+| 生产代码 | 86 文件 / 9830 行（非空行） | — |
+| 测试代码 | 46 文件（其中集成 9）/ 8123 行 | 测试/生产 ≈ 0.83 |
+| 单元用例 | **268** | 全绿 |
+| 集成用例 | **67** | 全绿 |
+| 前端用例 | 202（12 文件） | `nub run frontend:test` |
+| 整体覆盖率 | **34.9%** | 按包口径，见下方说明 |
+| `service` 覆盖率 | **79.7%** | spec §11.1 要求的就是 service 核心逻辑 |
+| **`repository` 覆盖率** | 包口径 6.3% / **集成口径 67.5%** | 后者才是真实的 |
 | 静态检查 | `go vet` / `staticcheck` / `deadcode` | **三者均 0 告警** |
 | Lint | `golangci-lint` v2.13.2（`.golangci.yml`） | **0 issues**；入口 `nub run backend:lint` |
 | SQL / 索引 | 25 条查询实测 + 3 组 `IGNORE INDEX` 反向验证 | 见 `docs/sql-optimization.md` |
-| 数据竞争 | `-race` 全量通过 | **未检出竞争** |
-| Fuzz | 11 目标 × 30s | 全部通过（回归语料已入库） |
-| Benchmark | 17 项 | 见 `docs/benchmark/` |
+| 数据竞争 | `-race` 全量通过（`./internal/...`，**24 个包结果行**） | **未检出竞争** |
+| Fuzz | **13** 个目标 × 30s | 全部通过（回归语料已入库） |
+| Benchmark | 分页 / 号源 / 审计 / JWT | 见 `docs/benchmark/`（含环境与"不测什么"） |
 | CI | 6 关卡（static / unit+race / integration / fuzz / vuln / frontend） | workflow 已落地，**尚未在 GitHub 真跑过** |
 | 依赖漏洞 | 6 → **1**（`GO-2026-5932`，上游无修复且代码未调用） | 已接受 |
 
-### 后端完成度 vs 项目完成度（**汇报时必须分开说**）
+### 交付完成度
 
-**后端功能完整**：29 条端点全部实现并实测，M1–M6 全部完成，spec G2/G3/G4 达成。
+| 层 | 状态 | 依据 |
+|---|---|---|
+| **后端** | ✅ 完成 | 29 条端点全部实现并实测，M1–M6 全部完成，spec G2/G3/G4 达成 |
+| **前端** | ✅ 完成 | 三角色页面全部实现；202 个 vitest 通过；`typecheck`/`lint`/`build` 零错误零告警。见 `frontend/AGENTS.md` |
+| **编排（G5）** | ✅ 完成 | `deploy/compose.yml` 一键起 mysql + redis + backend + nginx，四容器 healthy。见 `deploy/README.md` |
 
-**项目整体未完成** —— spec §12.2 的交付清单里还有两项，**都不属于后端**：
-
-| 未完成项 | 影响 |
-|---|---|
-| **前端页面**（spec §8：登录/挂号/AI 对话/医生工作台/管理看板） | G1「三角色全流程闭环」只完成了后端一半 —— 患者目前无法真正走完流程 |
-| **全栈 compose 编排**（nginx + 前后端镜像） | G5「一键起全栈」未达成；现有 `deploy/compose.dev.yml` 只起 mysql/redis |
-
-**已补齐的交付物**：
-
-| 项 | 内容 |
-|---|---|
-| 性能证据 | `docs/benchmark/`（17 项基准）+ `docs/sql-optimization.md`（25 条查询 EXPLAIN 实测 + 3 组 `IGNORE INDEX` 反向验证）。注意两份**口径不同、数字不可互相替代**，理由写在 `sql-optimization.md` §0 |
-| 代码质量证据 | `.golangci.yml`（v2，**0 issues**）+ `nub run backend:lint` + CI 关卡 |
-| **G6 AI Vibe Coding 留痕** | `docs/ai-vibe-coding/`：WORKFLOW + prompts 指针 + **6 篇**逐模块 review（M1–M6）。**性质是事后整理**，每篇标注来源；前端无页面故无前端 review |
-
-**所以："后端基本完成"成立；"项目完成"不成立。** 详见 `MODULES.md` §0.2。
+**项目已达"功能完整"**；剩下的是**验证类**工作（浏览器人工验收、编排异常路径等），
+不是缺失的功能。完整清单见 §7。
 
 ### 覆盖率的两个口径（**报数时必须说清**）
 
 ```
-按包统计（go test ./...：集成测试是独立包，执行不计入）：
-    整体 34.2%   service 79.6%   repository 6.4%   handler 0%
+按包统计（go test ./... -cover；集成测试是独立包，执行不计入）：
+    整体 34.9%   service 79.7%   repository 6.3%   handler 0%
 
-集成口径（-coverpkg 单独统计集成测试）：
-    repository 67.5%   service 62.4%   handler 76.6%
+集成口径（-coverpkg=./internal/... 单独统计集成测试）：
+    整体 69.7%   repository 67.5%   service 62.4%   handler 77.1%
 ```
 
-**`repository` 那 6.4% 是假象**，本项目已经因此误读过一次结论
-（把 6.4% 当成"数据访问层几乎没测"）。报数时请连口径一起报。
+**`repository` 那 6.3% 是假象**，本项目已经因此误读过一次结论
+（把 6.3% 当成"数据访问层几乎没测"）。报数时请连口径一起报。
 
 ---
 
@@ -245,7 +240,7 @@
 | L6 | `database-review.md` 把"由 service 复活软删除行"写成了已完成，**代码里根本没有**（无 `Unscoped()` / `deleted_at = NULL` / `.Delete()` 调用） | 如实改写 + 记入待办，并注明"加删除功能前必须先实现复活" |
 | L7 | 文档把管理端点写成 `/api/v1/audit-logs`（少了 `/admin/`），把已实现的同步端点列为待办 | 已修正，并立规：**路由清单以 `router.go` 或 gin 启动输出为准** |
 | L8 | **`secret/password.go` 把 bcrypt 的超长行为说成"会被静默截断"** —— 实测当前依赖 `x/crypto v0.48.0` 的 `GenerateFromPassword` 对 >72 字节**返回 `ErrPasswordTooLong`**，不截断；而**比对路径 `CompareHashAndPassword` 反倒不做长度检查**。原注释的理由写反了 | 改正两处注释（`password.go` + `secret_test.go`），并写明真实理由：生成侧是"与库版本无关的明确错误"，比对侧才是需要守卫的那一侧。**代码行为零改动** |
-| L9 | `HANDOVER.md` §4「刻意偏离 spec」表写着"共 3 处"，但**漏了"用 `nub run` 替代 Makefile"**（spec §11.2 明确要求 Makefile，而 `package.json` 描述与 `AGENTS.md` §2.7 都写了它） | 补全为 6 处，并把该表定为**唯一事实来源**；`CODE-REVIEW.md` §6.2 的复述改为指向，消除漂移面 |
+| L9 | `HANDOVER.md` §4「刻意偏离 spec」表写着"共 3 处"，但**漏了"用 `nub run` 替代 Makefile"**（spec §11.2 明确要求 Makefile，而 `package.json` 描述与 `AGENTS.md` §2.7 都写了它） | 补全为 6 处，并把该表定为**唯一事实来源**；其他文档的复述一律改为指向，消除漂移面 |
 
 ### 🟡 低：**未修但已记录**的缺口（本轮 review 发现）
 
@@ -254,7 +249,7 @@
 | N1 | **`errcode` 三张表（常量 / `messages` / `httpStatus`）的一致性无自动化守护** | 代码注释明确要求"必须同步改，漏改会让错误码落到未知错误/500"，但 `internal/errcode/` **没有测试文件**，这条规则目前只靠人记。**建议补一个测试**：遍历三张表的 key 集合断言三者相等。成本约 20 行 |
 | N2 | **HIS 同步不失效科室医生缓存** | 核实：`DepartmentDoctorsCacheKeys` 只在 `cmd/seed` 与测试里被调用，`service/sync.go` 对 cache/redis **零引用**。同步更新医生后，科室医生列表最坏 **5 分钟**内是旧的（由 TTL 兜底）。属已知取舍；若要即时生效，在同步收尾处调用该函数即可 |
 | N3 | 审计日志按时间范围查询的**隐含假设** | `sql-optimization.md` Q19（按 `created_at` 范围查）走 `PRIMARY` 而非 `idx_created` —— 这**依赖 `created_at` 与 `id` 同向增长**（审计只追加不更新），当前成立。**若将来引入回填/乱序写入，这个假设会被打破而查询悄悄变慢**，计划也会退化。记录备查 |
-| N4 | **前端类型与后端 DTO 之间没有自动化同步机制** | 当前靠 `frontend/AGENTS.md` §3 的手写契约 + 人工对照。**方案已存档在 `docs/contract-sync.md`（生成 + 检测，零新依赖），尚未实施** —— 属于"要做的时候照做"的待办，不是遗漏 |
+| N4 | **前端类型与后端 DTO 之间没有自动化同步机制** | 当前靠 `frontend/AGENTS.md` §3 的手写契约 + 人工对照。**这是刻意接受的取舍，不是遗漏** —— 本项目一贯立场是"生成解决省事、测试解决可信"，而契约测试目前不可用（曾评估过一层零依赖的"契约金文件 + 双向测试"方案，未采纳）。需要时再单独立项 |
 
 ---
 
@@ -298,7 +293,7 @@
 | 审计 `Record`（每请求） | **275 ns** | 异步批量写的价值：请求路径无数据库往返 |
 | 审计 `Record`（缓冲满） | **125 ns**（比正常路径更快） | **背压路径不阻塞**这条设计承诺有了数字 |
 | JWT 校验（每请求） | **4.4 µs** | 相对一次 DB 往返（本机 1 ms 量级）可忽略 |
-| `-race` 全量 `./internal/...` | Debian 镜像 ~70 s | 见下方镜像对比 |
+| `-race` 全量 `./internal/...` | Debian 镜像约 36 s，**24 个包结果行** | 服务包 `service` 26.7 s 是长尾；判据见 `AGENTS.md` §5.10.1 |
 
 ### 一个被纠正的错误判断
 
@@ -324,17 +319,17 @@ PING 也是 422 µs，**时间几乎全在传输上**。
 
 ---
 
-## 五、工程基建（这一轮新增）
+## 五、工程基建
 
 | 项 | 内容 | 状态 |
 |---|---|---|
 | **CI** | `.github/workflows/ci.yml`，6 关卡按反馈速度排序 | ⚠️ **从未在 GitHub 真跑过**（仓库未 push） |
 | **静态检查** | `go vet` / `staticcheck` / `deadcode` 三者 0 告警；另新增 `.golangci.yml`（v2 格式，**实测 0 issues**）与一键入口 `nub run backend:lint` | ✅ |
 | **SQL 优化** | `docs/sql-optimization.md`：25 条查询的 EXPLAIN/EXPLAIN ANALYZE + 3 组索引反向验证（`IGNORE INDEX`） | ✅ |
-| **AI Vibe Coding 留痕（G6）** | `docs/ai-vibe-coding/`：WORKFLOW + prompts 指针 + **6 篇**逐模块 review；每篇含 spec §10.2 的六项清单 | ✅ 后端部分 |
-| **Fuzz** | 11 目标，`backend/scripts/fuzz.sh` 遍历（目标从源码 grep，不维护硬编码列表） | ✅ 全部通过 |
-| **Benchmark** | 17 项，`docs/benchmark/` | ✅ |
-| **`-race`** | `backend/scripts/race.sh`（Docker），CI 上用 ubuntu 原生 gcc | ✅ 通过 |
+| **AI Vibe Coding 留痕（G6）** | `docs/ai-vibe-coding/`：WORKFLOW + prompts 指针 + **6 篇**逐模块 review；每篇含 spec §10.2 的六项清单 | ✅ 后端部分（前端 review 仍缺） |
+| **Fuzz** | **13** 目标，`backend/scripts/fuzz.sh` 遍历（目标从源码 grep，不维护硬编码列表） | ✅ 全部通过 |
+| **Benchmark** | 分页 / 号源 / 审计 / JWT，`docs/benchmark/` | ✅ |
+| **`-race`** | `backend/scripts/race.sh`（Docker），CI 上用 ubuntu 原生 gcc | ✅ 通过（24 个包结果行） |
 | **任务入口** | `nub run backend:fuzz` / `:fuzz:long` / `:bench` / `:bench:integration` / `:race` / `:lint` | ✅ |
 
 ### Fuzz 的净收益
@@ -379,6 +374,25 @@ Error Trace 指向**断言** → 用例逻辑问题；指向**建数据** → �
 
 ## 七、风险与未决项（上报时要说清的部分）
 
+> **这里是"还剩什么没做"的唯一清单。** `AGENTS.md` §8 与 `docs/README.md` 都指向这里。
+
+### 7.1 未完成的工作（**都是验证类，不是缺失的功能**）
+
+| 优先级 | 项 | 说明 |
+|---|---|---|
+| 中 | **浏览器人工验收** | 前端与编排的结论全部来自 HTTP 层 + 静态检查，**没有在浏览器里打开过**。页面渲染、移动端布局、ECharts 绘制需人工走一遍（清单见 `frontend/AGENTS.md` §7.1）。**但"路由与角色"这一块已不再依赖人工**：`router.spec.ts`（22 例）与 `ReportView.spec.ts`（11 例）覆盖了角色 × 动作，见 §2 的 H6/H7/M6 |
+| 中 | 前端三处未被真实数据走到的分支 | `fallback=true` 降级（mock LLM 恒返回 `fallback=false`）、`/readyz` 的 503、`40002` 号源不足 —— 代码照契约写了，但没有被真实数据走到过 |
+| 中 | **编排异常路径** | 未测"依赖挂掉"的表现：`docker compose -f deploy/compose.yml stop mysql` 后 `readyz` 是否转 503、backend 是否变 unhealthy |
+| 中 | **前端 review 缺失** | spec §10.3 的 G6 交付物目前只有后端 6 篇（M1–M6）。前端页面已完成，但没有对应 review |
+| 中 | `golangci-lint` 未纳入 `go.mod` 工具依赖 | 版本号写在 `ci.yml` 而不是 `go.mod` 的 `tool` 指令。等 Go 的 tool directive 或 `mise`/`aqua` 能统一管理时应收敛 |
+| 低 | `sql-optimization.md` §4.4 的 cron 扫描 | 当前读 4000 行拿 200 条（1.48 ms）**可接受**。**触发条件已写明**：pending 占比降到 1% 以下时把 `ORDER BY id` 改为 `ORDER BY expire_at` |
+| 低 | `audit_logs` 分区 / 归档 | 写入最频繁的表，长期运行需要 TTL 或分区 |
+| 低 | 真实 LLM 接入 | `llm.NewClient` 对 `openai`/`dashscope`/`deepseek` **明确返回错误**（刻意设计）。真实厂商的限流、超时、流式分片边界都未被真实验证 |
+| 低 | 上游支持 TS7 后升级前端 | 目前锁定 TS 5.9.3，见 `AGENTS.md` §5.2 |
+| 低 | fuzz 目标可再扩 | 已覆盖 audit / jwt / mask / model / secret / service / traceid 共 **13** 个；`llm` 的流式分片解析、`config` 的取值解析尚未纳入 |
+
+### 7.2 风险
+
 | 风险 | 说明 | 缓解 |
 |---|---|---|
 | **CI 未验证** | workflow 只做过 YAML 解析与结构校验，**从未真正执行** | 首次 push 后必须盯一次；`frontend` job 的 `nub` 安装是最可能出问题的一环 |
@@ -386,10 +400,8 @@ Error Trace 指向**断言** → 用例逻辑问题；指向**建数据** → �
 | **`handler` 单元覆盖 0%** | 由集成测试保障行为 | 有意取舍，**但不是遗漏**（已在文档多处标明） |
 | **性能数据依赖本机环境** | Windows + Docker Desktop 放大了绝对延迟 | 只作同机对比；换机器需重测并更新环境表 |
 | **软删除"复活"未实现** | 当前无入口会软删，缺口不可达 | **加管理端删除功能前必须先实现** |
+| **前后端契约靠人工同步（N4）** | 改了后端 DTO 不会自动让前端变红 | 见 §2 的 N4；改 `internal/model` 时同时核对 `frontend/src/types/api.ts` 与 `frontend/AGENTS.md` §3 |
 | **`GO-2026-5932`** | 上游无修复，代码未调用该路径 | 已接受并记录 |
-| **前端仍是脚手架** | spec §8 的页面一个都没做 | 高优先级待办 |
-
-**未完成项完整清单**：`docs/HANDOVER.md` §3。
 
 ---
 
@@ -412,5 +424,5 @@ nub run backend:bench                # 纯内存基准
 nub run backend:bench:integration    # 真实 MySQL/Redis 基准
 ```
 
-**文档地图**：`docs/HANDOVER.md` 顶部有全部文档的阅读顺序。
+**文档全集与阅读顺序**：`docs/README.md`（唯一入口）。
 `docs/PITFALLS.md` 是易错点总索引。

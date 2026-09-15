@@ -470,8 +470,8 @@ nub run backend:vuln      # 需先 go install golang.org/x/vuln/cmd/govulncheck@
 - [x] **M6+** 医生工作台补全：接诊列表 `/doctor/appointments` + 预问诊报告对医生开放（含归属校验）
 - [x] **审视²** 全量代码审视：静态检查归零、清死代码、修队列越权与审计资源名、抽出 `internal/his` 契约
 - [x] **补测** 关键路径补测：repository 直测（号源/幂等/释放闸门/令牌）、限流、纯逻辑判定；修复 1 个 flaky 用例
-- [x] **基建** CI（6 关卡）/ fuzz（11 目标）/ benchmark（17 项）/ `-race`（Docker）；并再修 1 个 flaky（夹具生成器）
-- [ ] M7 前端（Vue 3 + Element Plus）——**按需求暂缓**
+- [x] **基建** CI（6 关卡）/ fuzz（**13** 目标）/ benchmark / `-race`（Docker）；并再修 1 个 flaky（夹具生成器）
+- [x] **前端**（Vue 3 + Element Plus）—— 三角色全部页面已完成，见 `frontend/AGENTS.md`
 
 ## 病历与同步设计（M6）
 
@@ -755,14 +755,14 @@ fake 里一行 Go 代码就实现的行为，在 Lua 脚本和带条件的 UPDAT
 | **超时释放** | 同一订单重复处理只回补一次（`RowsAffected` 闸门）；`ListExpiredPending` 只捞 pending 且已超时 |
 | **签到** | 序号按签到顺序递增、重复签到返回原序号、**不能替别人签到**（表现为"不存在"） |
 
-**注**：用 `-coverpkg` 统计 handler 层覆盖率时结果始终为 0，而同一次运行的其它包正常。
-HTTP 响应（404/405/400/401/403 信封、SSE 事件流）只能由 handler 产生，
-说明 handler 确实被执行，属统计口径问题。因此这里用**行为断言**证明覆盖，
-不给出 handler 的覆盖率数字。
+**注**：`handler` 的**单元**覆盖率为 0%（HTTP 适配层没有单测，由集成测试保障行为）。
+用 `-coverpkg=./internal/...` 单独统计集成测试时，**`handler` 实际 77.1%**
+—— HTTP 响应（404/405/400/401/403 信封、SSE 事件流）确实被执行到了。
 
-> 同一个口径陷阱也影响 `repository`：按包统计只有 6.4%，因为集成测试是独立包、
+> 同一个口径陷阱也影响 `repository`：按包统计只有 6.3%，因为集成测试是独立包、
 > 执行不计入该包的 profile。用 `-coverpkg` 单独统计集成测试，
-> **`repository` 实际 67.5%**、`service` 62.4%、`handler` 76.6%。
+> **`repository` 实际 67.5%**、`service` 62.4%、`handler` 77.1%。
+> **唯一台账与复现命令见 `docs/FIXES.md` §1。**
 
 ### 单元测试（268 个用例）
 

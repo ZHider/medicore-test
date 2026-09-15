@@ -5,6 +5,25 @@
 
 ---
 
+> ## ⚠️ 实现现状与修正（**读正文之前先读这一段**）
+>
+> 本文档是 **v2.0 需求基线**，写于 M1 之前。正文**刻意保留原貌**，以便追溯"最初要做什么"。
+> 实现过程中修正了 4 处缺陷、并刻意偏离了 6 处 —— **下面这些才是权威**：
+>
+> | 我想知道 | 权威来源 | 正文的偏差 |
+> |---|---|---|
+> | 实际有哪些端点、各自什么权限 | `backend/internal/router/router.go` | §6.1 只列了 11 条，**实际 29 条** |
+> | 实际表结构 | `docs/schema.sql` | §5.1 是草案：只有 4 张表（实际 11 张），且含**必然建表失败**的索引 |
+> | 实际架构与中间件顺序 | `docs/ARCHITECTURE.md`、`AGENTS.md` §3.2 | §3.1 的顺序与实现不同，且漏了 Audit |
+> | 实际技术栈与版本 | `AGENTS.md` §2.7、`go.mod`、`frontend/package.json` | §4 的版本锁定全部过期 |
+> | **刻意偏离 spec 的 6 处** | `docs/HANDOVER.md` §4（唯一事实来源） | 正文没有记录 |
+> | 现在健不健康、还剩什么 | `docs/FIXES.md` §1 / §7 | §12.2 的勾选状态已过期 |
+>
+> 正文里每一处已知错误都就地标了 **⟂** 并给出替代来源。
+> **不要照着正文的 DDL / 端点表 / Lua 脚本直接实现。**
+
+---
+
 ## 1. 项目概述
 
 ### 1.1 背景
@@ -95,6 +114,12 @@
                       └────────┘ └────────┘ └────────────┘
 ```
 
+> ⟂ **实际中间件链**（`router.go`）：
+> `TraceID → Recovery → RequestLog → Metrics → Audit`（**全局挂载**），
+> `[RateLimit → JWT → RBAC]`（**按路由挂载** —— 探针与 `/metrics` 必须免认证，
+> 否则 Prometheus 抓取会被 401）。上图把 RateLimit 排在 Metrics 之前、且**漏了 Audit**。
+> 权威版本：`AGENTS.md` §3.2、`docs/ARCHITECTURE.md` §一。
+
 ### 3.2 后端分层架构（强制约束）
 
 ```text
@@ -106,6 +131,13 @@ internal/
 ├── model/        # 实体(PO)、请求/响应DTO、枚举常量
 └── pkg/          # 无状态工具：crypto/mask/sse/llm/errcode/jwt
 ```
+
+> ⟂ **实际没有 `internal/pkg/`**：工具包**平铺**在 `internal/` 下
+> （`secret` / `mask` / `errcode` / `jwt` / `apperr` / `authctx` / `traceid` / `metrics` /
+> `logger` / `response`）。`internal` 本身已阻止外部导入，再加一层 `pkg` 是零语义的冗余层级。
+> 这是**第 2 处刻意偏离 spec**，见 `docs/HANDOVER.md` §4。
+> 另外实现里多了 `app`（依赖装配）、`audit`（异步审计）、`worker`（Stream 消费者）、
+> `scheduler`、`llm` / `his` / `mockhis` 等包。
 
 **分层铁律（Review 时的检查清单）：**
 1. 依赖方向只能向下：handler → service → repository → model，禁止反向依赖。
@@ -136,11 +168,29 @@ internal/
 | Element Plus | 2.x | 成熟的后台 UI 组件库 |
 | MySQL/Redis | 8.0 / 7-alpine | 主流关系型与内存数据库 |
 
+> ⟂ **实际版本以 `AGENTS.md` §2.7 为准**（下表全部过期）：
+> Go **1.27.1**（不是 1.22）· Gin **v1.12.0** · GORM **v1.31.2** · Viper **v1.21.0** ·
+> Vue **^3.5.42** · TypeScript **~5.9.3**（**TS 7 当前不可用**，原因见 `AGENTS.md` §5.2 ——
+> 这一点本文档完全没提，照抄会踩坑）。
+> 另外 spec 未列而实现必需的：`go-redis v9`、`robfig/cron v3`、`golang-jwt/jwt v5`、
+> `santhosh-tekuri/jsonschema v5`、`prometheus/client_golang`、`go-playground/validator`、
+> `golang.org/x/sync`（`singleflight` / `errgroup`）。
+
 ---
 
 ## 5. 数据库设计
 
 ### 5.1 核心表结构（DDL 草案）
+
+> ⟂ **本草案有 4 类问题，不要照着执行。权威 DDL 是 `docs/schema.sql`（11 张表）。**
+> 逐处修正见下面的行内注释；设计理由见 `docs/database-review.md`。
+>
+> | 本草案的问题 | 实际 |
+> |---|---|
+> | `schedules` 没有 `status` 列，却建了 `idx_date_status (sched_date, status)` | **建表必然报错**。已补 `status` 列 |
+> | 只有 4 张表 | 实际 **11 张**（另有 `departments` / `doctors` / `doctor_departments` / `medical_records` / `prescription_items` / `audit_logs` / `sync_logs`） |
+> | 全程没有软删除 | 统一 `deleted_at` + `gorm.DeletedAt`（第 3 处刻意偏离） |
+> | `phone_hash` 用 `SHA256(phone+salt)` | 改用 **HMAC-SHA256(pepper, phone)**（第 1 处刻意偏离，理由见 `HANDOVER.md` §4） |
 
 ```sql
 -- 用户表（三角色共用，敏感字段加密）
@@ -149,8 +199,8 @@ CREATE TABLE users (
   role          ENUM('admin','doctor','patient') NOT NULL,
   name          VARCHAR(64)  NOT NULL,
   phone_enc     VARBINARY(128) NOT NULL COMMENT 'AES-GCM加密手机号',
-  phone_hash    CHAR(64)     NOT NULL COMMENT 'SHA256(phone+salt)，用于唯一约束和登录',
-  password_hash VARCHAR(72)  NOT NULL,
+  phone_hash    CHAR(64)     NOT NULL COMMENT 'SHA256(phone+salt)，用于唯一约束和登录',  -- ⟂ 实际是 HMAC-SHA256(pepper, phone)
+  password_hash VARCHAR(72)  NOT NULL,  -- ⟂ 实际 VARCHAR(100)
   created_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   UNIQUE KEY uk_phone_hash (phone_hash)
 ) ENGINE=InnoDB;
@@ -163,9 +213,10 @@ CREATE TABLE schedules (
   time_slot  ENUM('am','pm') NOT NULL,
   total      INT NOT NULL,
   remaining  INT NOT NULL COMMENT '剩余号源',
-  version    INT NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
-  UNIQUE KEY uk_doctor_date_slot (doctor_id, sched_date, time_slot),
-  KEY idx_date_status (sched_date, status)
+  version    INT NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',  -- ⟂ 实现未使用；并发靠 `remaining > 0` 的条件更新 + uk_active 生成列
+  status     ENUM('open','closed','cancelled') NOT NULL DEFAULT 'open',  -- ⟂ 本草案漏了这一列，而下一行的索引引用了它
+  UNIQUE KEY uk_doctor_date_slot (doctor_id, sched_date, time_slot),  -- ⟂ 实际含 department_id（多对多后专家要能跨科室排班）
+  KEY idx_date_status (sched_date, status)  -- ⟂ 列缺失 = 建表必然失败；另一处见 database-review.md
 ) ENGINE=InnoDB;
 
 -- 预约表（幂等与游标分页设计）
@@ -178,18 +229,22 @@ CREATE TABLE appointments (
   expire_at     DATETIME(3) NOT NULL COMMENT '15分钟支付/确认截止',
   created_at    DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   UNIQUE KEY uk_idempotency (idempotency_key),
-  KEY idx_user_created (user_id, created_at DESC) -- 游标分页索引
+  KEY idx_user_created (user_id, created_at DESC) -- 游标分页索引  -- ⟂ 实际 idx_user_cursor (user_id, id DESC)
+  -- ⟂ 实际还有：deleted_at、department_id、checked_in_at、queue_no、
+  --    以及 uk_active 生成列唯一键（软删除与唯一约束共存的关键，见 database-review.md §4.3）
 ) ENGINE=InnoDB;
 
 -- AI 预问诊报告表
 CREATE TABLE ai_pre_reports (
   id             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  appointment_id BIGINT UNSIGNED NOT NULL,
-  structured_json JSON NOT NULL COMMENT 'LLM结构化输出（经Schema校验）',
+  appointment_id BIGINT UNSIGNED NOT NULL,  -- ⟂ 实际有唯一约束（一次预约一份报告）
+  structured_json JSON NOT NULL COMMENT 'LLM结构化输出（经Schema校验）',  -- ⟂ 实际可空：降级时置 null（这与 §7.2 自己写的"置 null"矛盾）
   conversation   JSON NOT NULL COMMENT '完整对话记录',
   llm_model      VARCHAR(64) NOT NULL,
   prompt_version VARCHAR(16) NOT NULL,
   created_at     DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+  -- ⟂ 实际还必须有：status ENUM('pending','processing','done','failed')、fallback、
+  --    attempt_count、error_msg、started_at、finished_at（决策 #8 改异步之后缺一不可）
 ) ENGINE=InnoDB;
 ```
 
@@ -216,6 +271,25 @@ CREATE TABLE ai_pre_reports (
 | **管理** | POST | /api/v1/admin/sync/:source | admin | 手动触发模拟HIS同步 |
 | **运维** | GET | /healthz, /readyz, /metrics | - | 探针与 Prometheus 指标 |
 
+> ⟂ **上表只列了 11 条"核心"端点，实际有 29 条。** 权威来源是
+> `backend/internal/router/router.go`（或启动一次看 gin 打印的路由）。
+> 下表是本文档**遗漏**、但已实现的 18 条 —— 其中「医生工作台」两条还是
+> 后来按 §2.1 的角色能力矩阵**倒查出来的规格缺口**，说明这张表当时确实不完整：
+>
+> | 模块 | Method | Path |
+> |---|---|---|
+> | 认证 | POST | `/auth/register`、`/auth/refresh`、`/auth/logout` |
+> | | GET | `/auth/me` |
+> | 目录 | GET | `/departments`、`/departments/:id/schedules`、`/doctors/:id`、`/doctors/:id/schedules` |
+> | AI | GET | `/appointments/:id/preconsult/history`、`/appointments/:id/preconsult/report` |
+> | 预约 | POST | `/appointments/:id/checkin` |
+> | | GET | `/doctor/appointments`（医生工作台接诊列表）、`/schedules/:id/queue`（候诊队列） |
+> | 管理 | GET | `/admin/audit-logs`、`/admin/sync-logs` |
+> | 病历 | POST/GET | `/appointments/:id/record` |
+> | | GET | `/records` |
+>
+> 另外注意：管理端点的前缀是 **`/admin/`**（文档曾漏写这一段，照抄会 404）。
+
 ---
 
 ## 7. 核心流程详细设计
@@ -230,22 +304,55 @@ CREATE TABLE ai_pre_reports (
    redis.call('DECRBY', KEYS[1], ARGV[1])
    return 1
    ```
+   > ⟂ **这段脚本有致命缺陷，实现已改。** 键不存在时返回 `0`，而调用方把 `0` 解读为
+   > "号源不足" —— 于是 **Redis 冷启动时所有抢号全部失败，且提示误导**。
+   > 实际返回 `-1`（`StockNotLoaded`）表示"未预热"，调用方先预热再重试。
+   > 另外实现里多了"以容量为上限、键不存在时不创建"的回补钳位。
+   > 见 `AGENTS.md` §2.4、`docs/HANDOVER.md` §2.2 缺陷 #2。
+
 3. **MySQL 事务落库**：INSERT 预约记录 + UPDATE 排班（乐观锁 `WHERE id=? AND remaining > 0`）。
+   > ⟂ 实现用的是**单条原子条件 UPDATE**（`remaining > 0` + 检查 `RowsAffected`），
+   > `version` 字段实际未被使用。
 4. **补偿机制**：若 MySQL 事务失败，Lua 回补 INCR + 删除幂等键。
+   > ⟂ **删幂等键必须"先比对再删"**（compare-and-delete）。无条件 `DEL` 会误删
+   > 已经完成的那条记录，幂等直接失效。见 `HANDOVER.md` §2.2 缺陷 #3。
 5. **过期释放**：cron 每分钟扫描 `expire_at < NOW()` 的 pending 订单，置为 expired 并回补号源。
+   > ⟂ 实现还加了"幂等闸门"，避免多实例并发扫描时**重复回补**导致号源凭空变多。
+   > 另有一个每 5 分钟的**号源对账**任务（以 MySQL 为准校准 Redis）——
+   > 本文档没有，但它是"进程崩溃无法补偿"的唯一兜底。
 
 ### 7.2 AI 预问诊流程（LLM 可靠性设计）
+
+> ⟂ **本节描述的是"同步总结"，实现已改成异步（决策 #8），且强制用 Redis Stream。**
+> 这与 §1.3"用 Redis Stream/定时任务实现异步与调度"是自洽的，本节漏写了。
+> 实际链路：
+>
+> ```
+> submit → 校验权限/归属 → 建报告(pending) → XADD 入队 → 立即返回 202 { report_id, status }
+> worker → XREADGROUP → 抢占 → LLM 总结 → Schema 校验 → 失败重试 1 次 → 降级
+>       → 写报告(done/failed) → XACK
+> ```
+>
+> 为什么必须异步：用户刷新/关页面 ≠ 任务取消；LLM 有限流需要背压；LLM 延迟不可控会拖垮 P99。
+> 权威版本：`docs/MODULES.md` §5.5、`docs/ARCHITECTURE.md` §3.4、`AGENTS.md` §3.4。
 
 1. **SSE 流式对话**：前端 `fetch` + `ReadableStream`，后端透传 LLM stream。必须处理 `ctx.Done()` 防止 goroutine 泄漏。
 2. **结构化总结与降级**：
    - 对话结束触发 LLM 总结（要求输出 JSON）。
    - 后端使用 `jsonschema` 校验。
    - **降级策略**：校验失败重试1次；仍失败或超时，则保存原始对话文本，`structured_json` 置 null，标记 `fallback=true`，医生端展示原始对话。
+   > ⟂ 实现里加了一条本节没有的关键防线：**`{}` 是合法的 JSON Schema**，
+   > 若 Schema 被误改成空对象，校验会永远通过、降级永不触发、垃圾数据静默入库。
+   > `SummaryValidator.SelfCheck()` 在启动时用空对象做反向验证，把它变成启动失败。
 3. **Prompt 版本化**：System Prompt 存于 `backend/prompts/preconsult_v1.md`，版本号入库，便于追溯。
 
 ### 7.3 模拟 HIS 数据同步
 - `pkg/mockhis/` 内置 JSON 数据源。
+  > ⟂ **实际位置是 `internal/his`（契约，只放类型）+ `internal/mockhis`（适配器）。**
+  > 契约不能放 mock 包里 —— 否则业务层会反向依赖 mock，真实 HIS 适配器也得 import 它。
 - 同步策略：upsert by `external_id`，使用 `errgroup` 并发处理（限并发 5）。
+  > ⟂ 实现是**三阶段**（departments → doctors → schedules），且**同步绝不重置 `remaining`** ——
+  > 把 `remaining` 与 `total` 一起覆盖等于每次同步都把已预约号源还回去，**每次同步都是一次超卖**。
 - 记录 `sync_logs`（total/succeeded/failed）。
 
 ---
@@ -310,42 +417,62 @@ docs/ai-vibe-coding/
 └── reviews/                 # ≥5篇，如 01-skeleton.md, 02-redis-lua.md...
 ```
 
+> ⟂ **实际文件名不同**：`reviews/01-m1-skeleton.md` … `06-m6-records-sync.md`（**6 篇**，覆盖 M1–M6）。
+> 另外 `prompts/system-rules.md` 与 `prompts/preconsult_v1.md` **只留指针、不放正文**：
+> 全局规则在仓库根 `AGENTS.md`，运行期提示词在 `backend/prompts/`（`go:embed` 不允许跳出包目录）。
+> 这两处分别是第 5、6 处刻意偏离，见 `docs/HANDOVER.md` §4。
+
 ---
 
 ## 11. 测试与部署
 
 ### 11.1 测试策略
 - **单元测试**：testify + miniredis + sqlmock。覆盖 service 层核心逻辑（抢号状态机、Lua扣减、LLM校验降级）。
+  > ⟂ **实际没有用 `sqlmock`**（`go.mod` 里没有这个依赖）。分层做法是：
+  > service 只依赖**使用方声明的小接口**，测试注入内存 fake —— 所以单元测试**不需要数据库**。
+  > SQL / Lua 的语义另由**直测真实 MySQL/Redis 的集成测试**保障（fake 里的 `SETNX` 只是一行 map 赋值，
+  > 写错成 `SET` 也发现不了）。现状：268 单元 + 67 集成，见 `docs/FIXES.md` §1。
 - **集成测试**：httptest + 真实依赖。覆盖核心 API happy path 与越权校验。
 - **压力测试**：hey/wrk 验证抢号并发指标。
+  > ⟂ 实际用 `cmd/loadtest`（Go 自写并发压测）—— hey/wrk 测不出超卖，见 `AGENTS.md` §3.1。
 
 ### 11.2 部署方案（Docker Compose）
 - **服务编排**：mysql, redis, backend (多阶段构建), frontend (nginx)。
 - **网络与端口**：mysql/redis 不映射宿主机端口（仅内部网络），frontend 暴露 80 端口。
 - **SSE 支持**：Nginx 配置 `proxy_buffering off; proxy_read_timeout 300s;`。
 - **Makefile**：提供 `make dev`, `make test`, `make bench` 等快捷命令。
+  > ⟂ **没有 Makefile**（本机也没有 `make`）。任务入口是根目录 `package.json` 的
+  > `nub run <script>` —— 这是第 4 处刻意偏离。清单见 `AGENTS.md` §4。
+  > 实际起全栈的命令是 `nub run stack:init` → `stack:up` → `stack:seed`，见 `deploy/README.md`。
 
 ---
 
 ## 12. 里程碑与交付清单
+
+> ⟂ **本节是"历史计划（as-of v2.0）"，不是现状。** 实际的阶段划分、交付物与剩余工作
+> 见 `docs/HANDOVER.md` §1.1（提交时间线）与 `docs/FIXES.md` §1 / §7（指标与风险）。
 
 ### 12.1 里程碑
 - **M1 (W1)**：骨架与认证。compose环境、分层骨架、中间件链、JWT/RBAC。
 - **M2 (W2)**：预约与数据管理。抢号全流程、cron同步、游标分页、EXPLAIN优化。
 - **M3 (W3)**：AI预问诊与前端。SSE对话、Schema校验降级、Vue3全部页面。
 - **M4 (W4)**：打磨与交付。单测补齐、压测报告、README、演示视频。
+> 实际执行到 **M6**（病历处方 / HIS 同步 / 审计 / 医生工作台补全），另有两轮全量代码审视与一轮工程质量基建。
 
 ### 12.2 最终交付 Checklist
-- [ ] 可运行：`docker compose up -d --build` 一键起全栈。
-- [ ] 代码质量：后端分层无越界、`golangci-lint` 零 error、前端 `eslint` 通过。
-- [ ] AI 证据：`docs/ai-vibe-coding/` 完整（WORKFLOW + prompts + ≥5篇 reviews）。
-- [ ] 性能证据：`docs/benchmark/` 压测报告、`docs/sql-optimization.md`（EXPLAIN对比）。
-- [ ] 演示：3-5 分钟录屏（注册→抢号→AI预问诊→医生查看→管理看板）。
+- [x] 可运行：一键起全栈（实现为 `nub run stack:up`，不是根目录 `docker compose`）。
+- [x] 代码质量：后端分层无越界、`golangci-lint`（v2）零 error、前端 `eslint` + `typecheck` 通过。
+- [x] AI 证据：`docs/ai-vibe-coding/`（WORKFLOW + prompts 指针 + **6 篇** reviews）。
+- [x] 性能证据：`docs/benchmark/`、`docs/sql-optimization.md`（EXPLAIN/EXPLAIN ANALYZE 对比）。
+- [ ] 演示：3-5 分钟录屏（注册→抢号→AI预问诊→医生查看→管理看板）—— **唯一未做的一项**。
 
 ---
 
-> **下一步行动建议**：
-> 确认此 Spec v2.0 后，我们可以直接开始 **M1 启动包** 的生成，包括：
-> 1. 调整后的 `prompts/system-rules.md`（全栈质量约束提示词）
-> 2. 基础 `docker-compose.yml` 与 `init.sql`
-> 3. 后端项目骨架代码（main.go / 中间件链 / 分层目录结构）
+> ⟂ **以下"下一步行动建议"是 v2.0 立项时的开场白，早已完成，仅作历史留存。**
+>
+> ~~确认此 Spec v2.0 后，我们可以直接开始 **M1 启动包** 的生成，包括：~~
+> 1. ~~调整后的 `prompts/system-rules.md`（全栈质量约束提示词）~~
+> 2. ~~基础 `docker-compose.yml` 与 `init.sql`~~
+> 3. ~~后端项目骨架代码（main.go / 中间件链 / 分层目录结构）~~
+>
+> **现在的入口**：`docs/README.md`（文档索引）、`AGENTS.md` §1（立刻要做的三件事）。

@@ -303,5 +303,5 @@ INSERT INTO departments (code, name, sort_order) VALUES
   ('PED',  '儿科',   30),
   ('OBGY', '妇产科', 40);
 
--- 初始管理员：建议由 Go seed 程序读取 ADMIN_INIT_PASSWORD 环境变量动态生成 bcrypt，
+-- 初始管理员：由 Go seed 程序读取 MEDICORE_ADMIN_PASSWORD 环境变量动态生成 bcrypt，
 -- 不要把 hash 硬编码进 SQL。

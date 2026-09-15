@@ -1,8 +1,11 @@
 # AGENTS.md — MediCore 项目交接说明
 
 > **给新 agent 的第一份文件。** 读完这份就能开始工作；需要细节时按文中的指引跳转。
-> 最后更新：工程质量基建（CI / fuzz / benchmark / race）之后。
-> 提交历史见 `docs/HANDOVER.md` §1；缺陷总账见 `docs/FIXES.md`；易错点总索引见 `docs/PITFALLS.md`。
+> 最后更新：一次全量文档一致性整理之后（指标口径统一、三份中间态文档移入 git 历史）。
+>
+> **文档全集与阅读顺序：`docs/README.md`**（唯一入口）。
+> 健康指标台账见 `docs/FIXES.md` §1；易错点总索引见 `docs/PITFALLS.md`；
+> 刻意偏离 spec 的 6 处见 `docs/HANDOVER.md` §4（唯一事实来源）。
 
 ---
 
@@ -11,10 +14,11 @@
 **MediCore** 是医疗数据中台 + AI 预问诊平台：Go/Gin 单体后端 + Vue3 前端 + MySQL + Redis。
 定位是**展示全栈工程能力与 AI Vibe Coding 实践**的求职项目，因此代码质量与"过程留痕"同等重要。
 
-- **规格来源**：`spec.md`（Single Source of Truth，v2.0）
-- **当前状态**：后端 M1–M6 全部完成并通过实测（29 个端点）+ 一次全量代码审视；前端页面**全部完成并实测**；**全栈 compose 编排已完成**（`deploy/compose.yml`，一键起 mysql+redis+backend+nginx）
-- **规模**：生产 86 文件 / 9730 行；测试 42 文件 / 7553 行；后端 **268 个单元 + 67 个集成**用例全部通过；前端另有 202 个 vitest 用例（12 个文件）<br>（口径：顶层 `Test`/`Fuzz` 函数数。自测命令 `go test ./... -v | grep -c "^--- PASS"`，改动测试后请顺手更新本行）
-- **覆盖率**：整体 34.2%（`service` 79.6% 是核心保障）；`repository` 6.4% 是按包统计的假象，**集成口径 67.5%**
+- **规格来源**：`spec.md`（需求基线 v2.0，**已被实现的修正写在它的顶部"已修正清单"**）。
+  表结构以 `docs/schema.sql` 为准、端点以 `backend/internal/router/router.go` 为准。
+- **当前状态**：后端 M1–M6 全部完成并通过实测（29 个端点）+ 两轮全量代码审视；前端页面**全部完成并实测**；**全栈 compose 编排已完成**（`deploy/compose.yml`，一键起 mysql+redis+backend+nginx）
+- **规模**：生产 86 文件 / 9830 行（非空行）；测试 46 文件（其中集成 9）/ 8123 行；后端 **268 个单元 + 67 个集成**用例全部通过；前端另有 202 个 vitest 用例（12 个文件）<br>（口径与复现命令见 `docs/FIXES.md` §1 —— **那是唯一台账，改测试后只需更新那一处**）
+- **覆盖率**：整体 34.9%（`service` 79.7% 是核心保障）；`repository` 6.3% 是按包统计的假象，**集成口径 67.5%**
 - **静态检查**：`go vet` / `staticcheck` / `deadcode` 三者均为 0 告警；另有 `.golangci.yml`（v2 格式，实测 v2.13.2 **0 issues**），一键入口 `nub run backend:lint`
 
 ---
@@ -146,7 +150,7 @@ db.Table("doctors AS d").Joins(...).Where("d.deleted_at IS NULL AND u.deleted_at
 
 | 项 | 版本 | 注意 |
 |---|---|---|
-| Go | **1.27.1** | 容器镜像也是 `golang:1.27.1-alpine`，两者必须一致 |
+| Go | **1.27.1** | 构建镜像 `golang:1.27.1`（Debian），运行镜像 `alpine:latest`；`go.mod` 的 `go` 指令必须 ≤ 构建镜像的 Go 版本 |
 | Node | 24.18.0 | 用 **nub**（不是 npm/pnpm） |
 | 前端 TS | **5.9.3** | **不要升到 TS 7**，原因见 §5.2 |
 | 包管理 | `nub` | `nub run <script>`，**没有 make** |
@@ -181,24 +185,22 @@ db.Table("doctors AS d").Joins(...).Where("d.deleted_at IS NULL AND u.deleted_at
 
 ```
 MediCore/
-├── spec.md                  # 规格说明书（SSOT）
-├── FEASIBILITY.md           # 可行性分析（本机实测结论）
+├── spec.md                  # 需求基线 v2.0（★ 顶部有"已修正清单"，别照抄里面的 DDL/端点表）
 ├── AGENTS.md                # ← 本文件
 ├── .github/workflows/ci.yml # CI：静态检查 / 单元+race / 集成 / fuzz / 漏洞 / 前端
 ├── docs/
-│   ├── schema.sql           # 完整 DDL（11 张表，已实测）
-│   ├── database-review.md   # 数据库设计评审与 22 项验证证据
-│   ├── CODE-REVIEW.md       # 整体审视报告
-│   ├── HANDOVER.md          # 开发历程、错误记录、未完成工作
+│   ├── README.md            # ★★ **文档全集与阅读顺序（唯一入口）**
+│   ├── schema.sql           # 完整 DDL（11 张表，已实测）—— **表结构的唯一权威**
+│   ├── database-review.md   # 数据库设计的评审理由与验证证据
+│   ├── HANDOVER.md          # 开发历程、错误记录 + **6 处刻意偏离 spec（唯一事实来源）**
 │   ├── MODULES.md           # ★ 逐模块结构与决策（改代码前先查这里）
 │   ├── ARCHITECTURE.md      # 架构与数据流详解
-│   ├── FIXES.md             # ★ 缺陷与改进总账 + 当前健康指标（**向上汇报看这份**）
-│   ├── PITFALLS.md          # ★ 易错点总索引 + 诊断判据（**写代码前扫一眼**）
+│   ├── FIXES.md             # ★ 缺陷与改进总账 + 当前健康指标（**唯一指标台账**）
+│   ├── PITFALLS.md          # ★ 易错点总索引 + 五张诊断判据（**写代码前扫一眼**）
 │   ├── sql-optimization.md  # ★ SQL/索引实测：EXPLAIN + IGNORE INDEX 反向验证
-│   ├── ONBOARDING.md        # ★★ **新人从零上手**：跑起来 → 业务 → 架构 → 取舍（接手先读这份）
+│   ├── ONBOARDING.md        # ★★ **新人从零上手**：跑起来 → 业务 → 架构 → 取舍
 │   ├── FIRST-TASKS.md       # ★★ **新人动手**：5 个由易到难的真实任务，每个含验收标准
 │   ├── PRINCIPLES.md        # ★★ **设计原则与最佳实践**：为什么这样设计 + 怎么发现自己做错了
-│   ├── contract-sync.md     # ★ **待做方案存档**：前后端契约同步（生成 + 检测），尚未实施
 │   ├── ai-vibe-coding/      # ★ spec §10.3 交付物：WORKFLOW + 提示词指针 + 6 篇逐模块 review
 │   └── benchmark/           # ★ 性能基准报告（含复现命令与环境说明）
 ├── backend/
@@ -280,9 +282,9 @@ worker → XREADGROUP → 抢占 → LLM 总结 → Schema 校验 → 失败重�
 | `nub run backend:test` | 单元测试（268 用例，无需外部依赖） |
 | `nub run backend:test:integration` | 集成测试（67 用例，需依赖服务 + 口令环境变量） |
 | `nub run backend:vet` / `backend:fmt` | 静态检查 / 格式化 |
-| `nub run backend:lint` / `backend:lint:fix` | **golangci-lint**（需 `go install`，见 `HANDOVER.md` §6）；当前 0 issues |
+| `nub run backend:lint` / `backend:lint:fix` | **golangci-lint**（需 `go install`，见下方安装命令）；当前 0 issues |
 | `nub run backend:vuln` | **漏洞扫描**（需先装 govulncheck） |
-| `staticcheck ./...` / `deadcode -test ./...` | 更深一层的静态检查（需 `go install`，见 `HANDOVER.md` §6） |
+| `staticcheck ./...` / `deadcode -test ./...` | 更深一层的静态检查（需 `go install`，见下方安装命令） |
 | `nub run backend:fuzz` / `backend:fuzz:long` | 对全部 fuzz 目标各跑 30s / 5m |
 | `nub run backend:bench` | 纯内存基准（审计写入、JWT） |
 | `nub run backend:bench:integration` | 真实 MySQL/Redis 基准（分页、号源），需先起依赖 |
@@ -302,6 +304,21 @@ worker → XREADGROUP → 抢占 → LLM 总结 → Schema 校验 → 失败重�
 ```powershell
 $env:MEDICORE_MYSQL_PASSWORD='medicore123'; cd backend; go run ./cmd/server
 ```
+
+**深一层的静态检查需要先手动装**（`go install` **会出网**，先看 §2.8）：
+
+```powershell
+cd backend
+go install honnef.co/go/tools/cmd/staticcheck@latest
+go install golang.org/x/tools/cmd/deadcode@latest
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+
+& "$env:GOPATH\bin\staticcheck.exe" ./...      # 应为 0
+& "$env:GOPATH\bin\deadcode.exe" -test ./...   # 应为 0
+golangci-lint run ./...                        # 应为 0 issues（配置在仓库根 .golangci.yml）
+```
+
+> 本项目已装：`staticcheck` / `deadcode` / `govulncheck` / `golangci-lint v2.13.2`，都在 `%GOPATH%\bin`。
 
 ### 4.1 命名与语义约定（加脚本时请保持一致）
 
@@ -332,8 +349,8 @@ $env:MEDICORE_MYSQL_PASSWORD='medicore123'; cd backend; go run ./cmd/server
 
 > 这一节是**最常踩、最危险**的那些，按"什么时候会遇到"排列。
 > **全量分类索引与诊断判据在 `docs/PITFALLS.md`** ——
-> 出问题时先看那里的四张判据表（测试挂了是代码问题还是用例问题？
-> 并发问题属于哪种形态？数据不一致往哪查？这条改动该动哪一层？）。
+> 出问题时先看那里的五张判据表（测试挂了是代码问题还是用例问题？
+> 并发问题属于哪种形态？数据不一致往哪查？这条改动该动哪一层？查询慢/索引该不该留？）。
 
 ### 5.1 Docker MySQL 的"假就绪"
 
@@ -461,7 +478,7 @@ NAT/出口问题，不是代码问题，也不该用"配个代理"来解决。
 
 另一个坑（脚本已处理）：Git Bash 会把 `-w /app` 改写成 Windows 路径，需要 `MSYS_NO_PATHCONV=1`。
 
-**实测**：Debian 镜像跑全量 `./internal/...`，未检出数据竞争（36 秒，24 个包结果行）。
+**实测**：Debian 镜像跑全量 `./internal/...`，未检出数据竞争（约 36 秒，**24 个包结果行**）。
 build cache 按镜像名分卷存放 —— 不同 libc 的产物缓存键不同，混用只会白等重编译。
 
 #### 5.10.1 `race.sh` 曾经静默"通过"（**本轮抓到的真缺陷**）
@@ -645,33 +662,20 @@ v1 用 `linters-settings` / `issues.exclude-rules`，v2 用 `version: "2"` +
 
 ---
 
-## 8. 下一步该做什么
+## 8. 接手前先读 / 还剩什么
 
-**未完成的工作**（详见 `docs/HANDOVER.md` §3）：
-
-| 优先级 | 项 | 说明 |
-|---|---|---|
-| ~~高~~ | ~~前端页面~~ | ✅ **已完成**：三角色全部页面 + axios 封装 + 按角色动态路由 + ECharts 看板。详见 `frontend/AGENTS.md` §0.1（含实测结论）与 §7.1（含**未验证项**） |
-| ~~高~~ | ~~全栈 compose 编排~~ | ✅ **已完成**：`deploy/compose.yml` + `backend/Dockerfile` + `frontend/Dockerfile` + nginx 配置。`stack:init` → `stack:up` → `stack:seed` 三步起全栈。详见 `deploy/README.md` |
-| 中 | **浏览器人工验收** | 页面渲染、移动端布局、ECharts 绘制仍需人工走一遍（`frontend/AGENTS.md` §7.1 列了清单）。<br>**但"路由与角色"这一块已经不再依赖人工**：一次真实事故（admin 刷新看板 → 「页面不存在」）暴露出守卫判断顺序与"声明/注册不一致"两类缺陷，现已由 `router.spec.ts`（22 例，含一条 `meta.roles` 不变量）与 `ReportView.spec.ts`（11 例）覆盖，见 `docs/FIXES.md` H6/H7/M6。<br>**教训**：这类缺陷**不报错、不崩溃**，只是功能静默失效 —— "页面能打开"不等于"功能可用"，必须对**角色 × 动作**逐一断言 |
-| 中 | 编排的异常路径验证 | 未测过"依赖挂掉"的表现：`docker compose -f deploy/compose.yml stop mysql` 后 `readyz` 是否转 503、backend 是否变 unhealthy |
-| 中 | AI Vibe Coding 交付物 | **后端部分已完成**：`docs/ai-vibe-coding/`（WORKFLOW + prompts + **6 篇**逐模块 review，覆盖 M1–M6）。**遗留**：前端页面已完成但还没有前端 review |
-| 中 | 性能证据文档 | `docs/benchmark/`（17 项基准）与 `docs/sql-optimization.md`（25 条查询实测 + 索引反向验证）**均已成型**。遗留：`sql-optimization.md` §4.4 记的 cron 扫描优化（当前代价可接受，触发条件已写明） |
-| 中 | **按角色横切复查** | **三角色已全部查完**：医生角色发现并修了 2 处规格缺口（`docs/MODULES.md` §6.7）；患者/管理员角色复查结论为**无新缺口**（逐端点证据见 `sql-optimization.md` 与 `MODULES.md`）。后续新增返回他人数据的端点时，仍按此清单扫一遍 |
-| 中 | **前后端契约同步（方案已存档，未实施）** | `docs/contract-sync.md` —— 让前端动态/同步/可靠地拿到**接口与数据结构**。核心判断：**生成解决"省事"，测试解决"可信"**。建议先做 L1（契约金文件 + 双向测试，**零新依赖**，约 270 行）。**需要时再按该文档 §6 执行** |
-| 中 | `golangci-lint` 配置 | 见 §4 命令与仓库根 `.golangci.yml` |
-| 中 | CI 首次运行验证 | workflow 已落地并通过 YAML 解析与结构校验，但**从未在 GitHub 上真跑过**（仓库未 push）。首次 push 后需要盯一次 |
-| 低 | `repository` 层覆盖率 | 按包统计 6.4%（假象）；集成口径 **67.5%**。仍为 0% 的主要是缓存命中路径与目录只读查询 |
-| 低 | fuzz 目标可再扩 | 目前覆盖 secret/jwt/audit/mask/model/service/**traceid** 的 13 个目标；`llm` 的流式分片解析、`config` 的取值解析尚未纳入 |
-
-**接手前建议先读**（按顺序）：
+**文档全集与三条阅读路径见 `docs/README.md`**（唯一入口，本文档不复述，避免漂移）。
 
 | 你是谁 | 先读什么 |
 |---|---|
 | **第一次接触这个项目的人**（基础一般） | **`docs/ONBOARDING.md`**（读懂它）→ **`docs/PRINCIPLES.md`**（懂原则）→ **`docs/FIRST-TASKS.md`**（动手） |
-| 熟悉的工程师 / agent | `docs/HANDOVER.md`（开发历程与教训）→ `docs/ARCHITECTURE.md` → `docs/MODULES.md`（改代码前查）→ `docs/PITFALLS.md`（写代码前扫） |
-| 只想看质量状态 | `docs/FIXES.md` §1 / §2 |
+| 熟悉的工程师 / agent | 本文件 §2（硬规则）→ `docs/ARCHITECTURE.md` → `docs/MODULES.md`（改代码前查）→ `docs/PITFALLS.md`（写代码前扫）；来龙去脉看 `docs/HANDOVER.md` §2 |
+| 只想看质量状态 | `docs/FIXES.md` §1（指标）/ §2（缺陷总账）/ §7（风险与未决） |
 
 > **`docs/ONBOARDING.md` 的定位**：本文档（`AGENTS.md`）是**参考手册** ——
 > 按主题排列，适合"查"。而 `ONBOARDING.md` 是**学习路径** —— 按顺序排列，
 > 适合"从头读一遍"，每节末尾有自检题。**两者是互补的，不是重复的。**
+
+**"还剩什么没做"不在本文档维护** —— 唯一清单是 `docs/FIXES.md` §7「风险与未决项」。
+一件事只写一处，是本项目对文档漂移的既定做法（见 `docs/README.md` §3 的反漂移规则）；
+这里曾经有一张与本项目进度表重复的待办表，已删除。

@@ -4,6 +4,7 @@
 >
 > **配套文档**：`AGENTS.md`（规则速查）、`docs/MODULES.md`（逐模块的结构与决策，
 > **改具体代码前先查那份**）、`docs/HANDOVER.md`（历程与教训）。
+> 文档全集与阅读顺序见 **`docs/README.md`**。
 
 ---
 
@@ -11,7 +12,7 @@
 
 ```
                          ┌──────────────────────────┐
-   浏览器 ──────────────►│  Nginx（计划中，未实现）  │
+   浏览器 ──────────────►│  Nginx（deploy/nginx/）   │
                          │  / → Vue3 静态资源        │
                          │  /api → backend:8080     │
                          └────────────┬─────────────┘
@@ -21,8 +22,8 @@
                          │                                  │
                          │  中间件链（顺序固定）              │
                          │  TraceID → Recovery → RequestLog │
-                         │  → Metrics → [RateLimit → JWT    │
-                         │  → RBAC] → Audit                 │
+                         │  → Metrics → Audit（以上全局）    │
+                         │  [RateLimit → JWT → RBAC]（按路由）│
                          │                                  │
                          │  handler → service → repository  │
                          │                                  │
@@ -40,12 +41,12 @@
 
 **单体分层而非微服务**（spec §1.3 显式声明）：单人全栈项目，拆分只增加运维复杂度。
 
-### 1.1 后端模块全景（24 个包 / 86 文件 / 9730 行）
+### 1.1 后端模块全景（28 个包：24 个 internal + 4 个 cmd / 86 文件 / 9830 行）
 
 分五类。**理解这个分类比记住目录树重要** —— 它决定了"新代码该放哪"。
 
 ```
-┌─ 入口与装配（3）─────────────────────────────────────────────┐
+┌─ 入口与装配（5）─────────────────────────────────────────────┐
 │  cmd/server      只做：加载配置 → Build → Start → 等信号 → Stop │
 │  cmd/genlocal    生成 configs/config.local.yaml（仓库无密钥）    │
 │  cmd/seed        演示数据（幂等）                                │
@@ -54,15 +55,15 @@
 └──────────────────────────────────────────────────────────────┘
 
 ┌─ 分层主干（4）—— 依赖只能向下 ────────────────────────────────┐
-│  handler      692 行  参数绑定/校验、统一响应；禁止 SQL/GORM      │
-│  service     2435 行  业务编排、事务边界、归属校验；禁止 gin      │
-│  repository  2284 行  ★ 唯一允许 GORM 的层；也是唯一放 SQL/Lua 的 │
+│  handler      695 行  参数绑定/校验、统一响应；禁止 SQL/GORM      │
+│  service     2454 行  业务编排、事务边界、归属校验；禁止 gin      │
+│  repository  2290 行  ★ 唯一允许 GORM 的层；也是唯一放 SQL/Lua 的 │
 │  model        672 行  PO / DTO / 枚举 + 分页与状态判定            │
 └──────────────────────────────────────────────────────────────┘
 
 ┌─ HTTP 装配（3）──────────────────────────────────────────────┐
 │  router    190 行  路由分组与中间件挂载（29 条端点）              │
-│  middleware 365 行  TraceID/Recovery/RequestLog/Metrics/        │
+│  middleware 369 行  TraceID/Recovery/RequestLog/Metrics/        │
 │                    RateLimit/JWT/RBAC/Audit                     │
 │  response   77 行  统一响应信封 {code,message,data,trace_id}     │
 └──────────────────────────────────────────────────────────────┘
@@ -70,15 +71,15 @@
 ┌─ 后台与外部抽象（6）──────────────────────────────────────────┐
 │  scheduler  157 行  cron：超时释放(1m) / 号源对账(5m) / HIS(1h)   │
 │  worker     270 行  Redis Stream 消费者（预问诊总结，含死信）      │
-│  audit      317 行  异步批量审计写入器                            │
+│  audit      322 行  异步批量审计写入器                            │
 │  llm        248 行  LLM 抽象 + mock（故障注入、流式分片）          │
 │  his         50 行  HIS 对接契约（只放类型，不放接口）             │
 │  mockhis     84 行  上述契约的模拟适配器（相对日期→绝对日期）       │
 └──────────────────────────────────────────────────────────────┘
 
-┌─ 无状态工具包（8）───────────────────────────────────────────┐
-│  config 305  secret 132  errcode 87  jwt 82  apperr 46          │
-│  mask 45  authctx 37  traceid 29  metrics 29  logger 22         │
+┌─ 无状态工具包（10）──────────────────────────────────────────┐
+│  config 305  secret 146  errcode 87  jwt 82  apperr 46          │
+│  mask 45  authctx 37  traceid 78  metrics 29  logger 22         │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -568,9 +569,9 @@ Zap JSON，字段 `trace_id / method / path / status / latency_ms / client_ip / 
 
 | 层 | 数量 | 运行 | 回答什么问题 |
 |---|---|---|---|
-| 单元 | 251 | `nub run backend:test` | 编排逻辑对不对（分支、顺序、错误映射）。注入内存 fake，秒级跑完 |
+| 单元 | 268 | `nub run backend:test` | 编排逻辑对不对（分支、顺序、错误映射）。注入内存 fake，秒级跑完 |
 | **repository 直测** | （含在集成内） | `nub run backend:test:integration` | **真实 SQL / Lua 的语义**：号源、幂等键、超时释放、签到、令牌 |
-| 集成 | 60 | `nub run backend:test:integration` | 端到端契约：全部 29 个端点、RBAC、审计、限流、SSE |
+| 集成 | 67 | `nub run backend:test:integration` | 端到端契约：全部 29 个端点、RBAC、审计、限流、SSE |
 
 **中间那层是最容易被忽略的**：fake 里一行 Go 代码就实现的行为，在 Lua 脚本和带条件的
 UPDATE 里是完全不同的语义。超卖、重复回补、幂等失效这三类问题
@@ -580,8 +581,8 @@ UPDATE 里是完全不同的语义。超卖、重复回补、幂等失效这三�
 
 | 检查 | 命令 | 抓什么 |
 |---|---|---|
-| **Fuzz**（11 目标） | `nub run backend:fuzz` | 解析不可信输入时的 panic / 越界 / 静默失效。**已找出 2 个真实缺陷** |
-| **Benchmark**（17 项） | `nub run backend:bench` `:bench:integration` | 性能回归。守护"游标恒定 vs OFFSET 线性"与"号源扣减 = 一次往返"两条结论 |
+| **Fuzz**（13 目标） | `nub run backend:fuzz` | 解析不可信输入时的 panic / 越界 / 静默失效。**已找出 2 个真实缺陷** |
+| **Benchmark** | `nub run backend:bench` `:bench:integration` | 性能回归。守护"游标恒定 vs OFFSET 线性"与"号源扣减 = 一次往返"两条结论 |
 | **`-race`** | `nub run backend:race` | 数据竞争（本机无 C 编译器，走 Docker；CI 上原生可用） |
 | **静态检查**（4 道） | `nub run backend:fmt` `:vet` `:lint` `:vuln` + `deadcode` | 分层越界、死代码、可格式化、已知漏洞。当前**全 0**；`golangci-lint` 配置见仓库根 `.golangci.yml` |
 
@@ -597,24 +598,25 @@ UPDATE 里是完全不同的语义。超卖、重复回补、幂等失效这三�
 | 包 | 覆盖率 | 评价 |
 |---|---|---|
 | `mask` / `audit` / `mockhis` / `jwt` / `worker` / `llm` / `prompts` / `secret` | 88–100% | ✅ |
-| `service` | 79.6% | ✅ 核心价值所在 |
+| `service` | 79.7% | ✅ 核心价值所在 |
 | `model` | 55.8% | 可接受 |
-| **`repository`** | **6.4%（口径假象）** | ⚠️ 见下方说明 |
+| **`repository`** | **6.3%（口径假象）** | ⚠️ 见下方说明 |
 | **`handler`** | **0%（单元）** | ⚠️ 但集成测试覆盖了全部端点行为 |
 
-**整体 34.2%，但这个数字低估了实际保障**：spec §11.1 要求的是"覆盖 service 层核心逻辑"，
-而 service 达到 79.6%。
+**整体 34.9%，但这个数字低估了实际保障**：spec §11.1 要求的是"覆盖 service 层核心逻辑"，
+而 service 达到 79.7%。**唯一台账与复现命令见 `docs/FIXES.md` §1。**
 
-> ⚠️ **`repository` 的 6.4% 是按包统计的假象。** 集成测试是独立包，
+> ⚠️ **`repository` 的 6.3% 是按包统计的假象。** 集成测试是独立包，
 > `go test ./...` 的 profile 不合并它的执行。用 `-coverpkg` 单独统计集成测试：
-> **`repository` 实际 67.5%**、`service` 62.4%、`handler` 76.6%。
+> **`repository` 实际 67.5%**、`service` 62.4%、`handler` 77.1%。
 > 报覆盖率时必须说清口径，否则会得出"数据访问层几乎没测"的错误结论。
 
 真实盲区是 repository 中**缓存命中路径**与**目录只读查询**这些非关键分支，
 而关键不变量（号源、幂等、释放闸门、令牌）现在都有直测。
 
 **静态检查**（`go vet` / `staticcheck` / `deadcode`）三者均为 0 告警。
-`go test -race` 在本机不可用（缺 cgo 所需的 C 编译器），详见 `HANDOVER.md` §2.7-G。
+`go test -race` 在本机不可用（缺 cgo 所需的 C 编译器），用 `backend/scripts/race.sh` 走 Docker
+补上，详见 `AGENTS.md` §5.10。
 
 ### 6.3 反向验证过的测试
 

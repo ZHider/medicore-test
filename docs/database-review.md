@@ -121,7 +121,7 @@ UNIQUE KEY uk_doctor_dept_date_slot (doctor_id, department_id, sched_date, time_
 >   `UpsertDepartment` 的 `ON DUPLICATE KEY UPDATE` 会更新到已删行但**不清 `deleted_at`**，
 >   于是数据"更新成功"却依然在列表里看不见。
 >
-> **加删除功能之前，必须先实现复活。** 已记入 `HANDOVER.md` §3.3。
+> **加删除功能之前，必须先实现复活。** 已记入 `docs/FIXES.md` §7。
 
 **唯一的例外是 `appointments.active_uk`**，其生成列表达式已包含软删除判断，使软删除同样释放号源占位：
 
@@ -215,11 +215,18 @@ id | status    | active_uk
 
 | 查询 | 计划 |
 |---|---|
-| cron 扫过期订单 `status='pending' AND expire_at < NOW()` | ✅ `idx_status_expire`，`Using index`（覆盖索引，免回表） |
+| cron 扫过期订单 `status='pending' AND expire_at < NOW()` | ⚠️ **本节结论已被真实量级推翻** —— 见下方说明 |
 | 稀有用户游标分页（23 万行中该用户仅 3 行） | ✅ 走索引查找 0.028ms |
 | 强制 `idx_user_cursor` | ✅ 区间扫描 0.0148ms（省一次排序） |
 
+> ⚠️ **cron 那条以 `docs/sql-optimization.md` §4.4 为准。** 这里当时看到 `Using index`
+> 是因为数据量太小（个位数行），优化器给出的计划不可信。
+> 灌到真实量级后实测：**`possible_keys: idx_status_expire`，但 `key: PRIMARY`** ——
+> 它没用上那条为它建的索引（原因是查询带 `ORDER BY id`，而 `idx_status_expire` 服务不了）。
+> 当前代价可接受（读 4000 行拿 200 条，1.48 ms），**改法与触发条件写在 `sql-optimization.md` §4.4**。
+
 > 说明：**数据量只有个位数行时优化器会给出 `Using filesort`**，那是统计信息不足的假象，非索引设计问题——我在 2 行的表上复现过，灌到 3 万行后计划自动变优。
+> **但同样地，"小数据量下看起来很好"的计划也不能当作结论** —— cron 那条就是反例。
 
 ### 5.4 性能基准：游标分页 vs OFFSET（230,005 行）
 
@@ -248,11 +255,16 @@ id | status    | active_uk
 
 ## 6. 待确认项
 
-1. **`status` 枚举是否够用？** 当前沿用 spec 的 `pending/confirmed/cancelled/expired`。接入签到后，真实流程通常是 `待确认 → 已确认 → 已签到 → 已完成`。我目前用 `checked_in_at`/`queue_no` 表示签到，未改枚举。是否需要补 `checked_in`/`completed` 两个状态？
-2. **`audit_logs` 增长策略**：写入最频繁的表。是否需要按 `created_at` 月度分区或定期归档？
-3. **"复活"语义确认**：删除后用同一手机号重新注册，是复活原账号（保留历史病历），还是要求换号？当前设计倾向复活。
-4. **HIS 同步范围**：`departments`/`doctors`/`schedules` 均带 `external_id`。是否还需同步患者基础信息？
-5. **初始管理员**：建议由 Go seed 程序读 `ADMIN_INIT_PASSWORD` 环境变量生成 bcrypt，不把 hash 硬编码进 SQL。
+> **本节是设计阶段留下的开放问题。** 仍在生效的已收敛到
+> `docs/FIXES.md` §7「风险与未决项」（那里是唯一清单），这里只保留原始提问以便追溯。
+
+1. **`status` 枚举是否够用？** 当前沿用 spec 的 `pending/confirmed/cancelled/expired`。接入签到后，真实流程通常是 `待确认 → 已确认 → 已签到 → 已完成`。目前用 `checked_in_at`/`queue_no` 表示签到，未改枚举。是否需要补 `checked_in`/`completed` 两个状态？**（未决，已记入 `FIXES.md` §7 的"性能/索引"之外的设计项）**
+2. **`audit_logs` 增长策略**：写入最频繁的表。是否需要按 `created_at` 月度分区或定期归档？**（未决，见 `FIXES.md` §7）**
+3. **"复活"语义确认**：删除后用同一手机号重新注册，是复活原账号（保留历史病历），还是要求换号？当前设计倾向复活。**（未决；注意复活逻辑本身尚未实现，见 §4.2）**
+4. **HIS 同步范围**：`departments`/`doctors`/`schedules` 均带 `external_id`。是否还需同步患者基础信息？**（未决）**
+
+> 原先的第 5 条"初始管理员读 `ADMIN_INIT_PASSWORD`"**已实现**，但环境变量名实际是
+> **`MEDICORE_ADMIN_PASSWORD`**（`backend/cmd/seed/main.go`）—— 原文写的名字不存在，已删除。
 
 ---
 

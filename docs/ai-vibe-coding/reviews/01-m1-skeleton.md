@@ -127,8 +127,10 @@ M1 涉及的高风险 API（`viper.SetDefault`/`BindEnv`、`zap`、`promhttp.Han
 | 限流 | `test/integration/ratelimit_test.go` 4 例（真实 Redis）：容量耗尽后被限、限流响应用**统一信封**、清桶后恢复、**抢号按用户而非按 IP** | ✅ |
 
 **诚实说明（M1 的验证强度弱于其他模块）**：
-`response` / `traceid` / `metrics` / `apperr` / `logger` **没有单独的测试文件**，
+`response` / `metrics` / `apperr` / `logger` **没有单独的测试文件**，
 它们由集成测试间接覆盖（29 个端点的统一信封、TraceID 贯穿）。
+（`traceid` 当时也在这个名单里，**后来补上了**：`traceid_test.go` + `traceid_fuzz_test.go`
+—— 起因是发现追踪号可被伪造用来抹掉整批审计，见 `docs/FIXES.md`。）
 **没有做过"故意改坏 `NoRoute` 看集成测试是否变红"这样的反向验证** ——
 这是 M1 相对 M4/M5 的真实差距，记录在这里而不是含糊过去。
 
@@ -148,5 +150,6 @@ M1 涉及的高风险 API（`viper.SetDefault`/`BindEnv`、`zap`、`promhttp.Han
 
 - 结构与决策：`docs/MODULES.md` §1
 - 原始错误记录：`docs/HANDOVER.md` §2.1（A–G 类）
-- 易错点：`docs/PITFALLS.md` §4（响应信封）、§8（工具链）
+- 易错点：`docs/PITFALLS.md` §8（工具链与环境）、§5（安全与鉴权）
 - 接手规则：`AGENTS.md` §2.1、§3.2、§5.5
+- 全量索引：`docs/README.md`
